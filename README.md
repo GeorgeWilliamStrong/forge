@@ -9,7 +9,7 @@ A full-waveform inversion framework built in [PyTorch](https://pytorch.org/).
 5. forge prototypes quickly.
 
 **Design philosophy:**
-1. be *easy* to read, understand and use,
+1. be easy to read, understand and use,
 2. be *entirely* hackable,
 3. built on PyTorch.
 
