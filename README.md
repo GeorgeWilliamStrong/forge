@@ -14,3 +14,13 @@ A full-waveform inversion framework built in [PyTorch](https://pytorch.org/).
 3. built on PyTorch.
 
 Currently, Forge only supports two-dimensional modelling. Extending the code to three-dimensional modelling is trivial. Scalability of three-dimensional modelling is not trivial, yet, with the recent rapid rise in easy-to-use distributed PyTorch training frameworks (e.g. [Ray](https://docs.ray.io/en/latest/index.html), [Horovod](https://horovod.ai/) and [PyTorch Lightning](https://www.pytorchlightning.ai/)), perhaps scalability is not as far off as it may seem.
+
+## Quickstart
+
+```sh
+git clone https://github.com/GeorgeWilliamStrong/forge.git
+cd forge
+pip install -e .
+```
+
+Then run through the [demo](https://github.com/GeorgeWilliamStrong/forge/blob/main/forge-demo.ipynb). 
