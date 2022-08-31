@@ -157,19 +157,29 @@ def animate(wavefield, shot=0, vmin=-2e7, vmax=2e7, interval=50):
     return ani
 
 
-def trace_plot(data, shot, scale_fac=1, size=(8,5), line_color='black', linewidth=1, fill=True, fill_color='black', fill_fac=1e-2):
+def trace_plot(data, shot, scale_fac=1, size=(8,4), line_color='black', linewidth=1, fill=True, fill_color='black', fill_color2=None, fill_fac=1e-2, save=None):
     time = np.arange(0, data.shape[2], 1)
     fig, ax1 = plt.subplots(figsize=size)
     for i in range(len(data[shot])):
         ax1.plot((scale_fac * data[shot][i]) + i, time, color=line_color, linewidth=linewidth)
         if fill:
-            ax1.fill_betweenx(time, i, (scale_fac * data[shot][i]) + i,
-                         where=(((scale_fac * data[shot][i]) + i) > i + fill_fac), color=fill_color)
+            if fill_color2:
+                if i%2 == 0:
+                    ax1.fill_betweenx(time, i, (scale_fac * data[shot][i]) + i,
+                                 where=(((scale_fac * data[shot][i]) + i) > i + fill_fac), color=fill_color)
+                else:
+                    ax1.fill_betweenx(time, i, (scale_fac * data[shot][i]) + i,
+                                 where=(((scale_fac * data[shot][i]) + i) > i + fill_fac), color=fill_color2)
+            else:
+                ax1.fill_betweenx(time, i, (scale_fac * data[shot][i]) + i,
+                                 where=(((scale_fac * data[shot][i]) + i) > i + fill_fac), color=fill_color)
     ax1.invert_yaxis()
     plt.xlim((-1, data.shape[1]))
     plt.ylim((data.shape[2]-1, 0))
     plt.xlabel('trace number')
     plt.ylabel('time-step')
+    if save:
+        plt.savefig(f'{save}.png', dpi=500) 
     plt.show()
                      
 
