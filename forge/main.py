@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-import sys
+from tqdm import tqdm
 from .laplacian import *
 from .geometry import *
 from .utils import *
@@ -175,10 +175,7 @@ class WaveformInversion_2d:
         self.wavefield[:, :, :, :] = 0
         
         # begin time-stepping 
-        for i in range(len(self.s)):
-            
-            sys.stdout.write(f'\r                       forward modelling | {i+1}/{len(self.s)} |')
-            sys.stdout.flush()
+        for i in tqdm(range(len(self.s)), colour='blue', ncols=60, mininterval=0.03):
             
             # alternate wavefield updates between u1 and u2 to avoid storing a third wavefield
             if i%2==0:
@@ -238,8 +235,6 @@ class WaveformInversion_2d:
         if self.r_hicks == True:
             self.d = d_hicks_to_d(self.d, self.r_pos_sizes, self.num_rec, self.num_srcs, self.s)
         
-        sys.stdout.write(' \u2713\n')
-        
         
     def adjoint_gradient(self, adjoint_source):
         """
@@ -258,10 +253,7 @@ class WaveformInversion_2d:
         count = 1
         
         # begin time-stepping
-        for i in range(adjoint_source.size(2)-1, -1, -1):
-            
-            sys.stdout.write(f'\r                       adjoint modelling | {adjoint_source.size(2)-i}/{adjoint_source.size(2)} |')
-            sys.stdout.flush()
+        for i in tqdm(range(adjoint_source.size(2)-1, -1, -1), colour='magenta', ncols=60, mininterval=0.03):
             
             # alternate wavefield updates between u1 and u2 to avoid storing a third wavefield
             if i%2==0:
@@ -304,8 +296,6 @@ class WaveformInversion_2d:
                 if i%self.s_rate==0:
                     self.m.grad[self.bp:-self.bp, self.bp:-self.bp] -= (self.u1[:, self.bp:-self.bp, self.bp:-self.bp]*self.wavefield[:, -count]).sum(0)
                     count += 1
-        
-        sys.stdout.write(' \u2713\n')
     
     
     def m_out(self):
@@ -331,12 +321,9 @@ class WaveformInversion_2d:
         # loop over multiscale frequency blocks
         for i in range(num_blocks):
             
-            print(f"""   =======================================================================""")
-            
             # low-pass the source and the data as required by the block frequency
             if blocks is not None:
-                print(f"""       block {i+1}/{num_blocks} | {blocks[i]:.4g}Hz |
-   -----------------------------------------------------------------------""")
+                print(f"block {i+1}/{num_blocks} | {blocks[i]:.4g}Hz")
                 s = butter_lowpass_filter(source.copy(), blocks[i], 1/self.dt, order=12)
                 data_filt = torch.from_numpy(butter_lowpass_filter(data, blocks[i], 1/self.dt, order=12)).float()
             else:
@@ -346,7 +333,7 @@ class WaveformInversion_2d:
             # begin optimization loop 
             for j in range(num_iter):
 
-                print(f'           iteration {j+1}/{num_iter}')
+                print(f'  iteration {j+1}/{num_iter}')
 
                 # zero the gradient
                 optimizer.zero_grad()
@@ -367,11 +354,11 @@ class WaveformInversion_2d:
                 for k in range(runs):
 
                     if runs > 1:
-                        print(f'               batch {k+1}/{runs}')
+                        print(f'    batch {k+1}/{runs}')
 
                     # initialize corresponding source locations, wavefields and data arrays for modelling
                     self.configure(s_pos[total_batch][k*bs:k*bs+bs], s)
-
+                    
                     # solve the forward problem G(m) = d, storing the forward wavefield
                     self.forward()
 
@@ -425,11 +412,13 @@ class WaveformInversion_2d:
                     
                 # calculate, print and record sample normalized loss value
                 f_n /= runs
-                print(f'               loss = {f_n:.4g}')
+                print(f'    loss = {f_n:.4g}')
                 self.loss_history.append(f_n)
 
                 if true_model is not None:
                     # calculate, print and record a sample normalized model RMSE
                     rmse = torch.sqrt(((self.m_out() - true_model)**2).mean()).item()/(true_model.shape[0]*true_model.shape[1])
-                    print(f'               rmse = {rmse:.4g}')
+                    print(f'    rmse = {rmse:.4g}')
                     self.rmse_history.append(rmse)
+            
+            print("______________________________________________________________________ \n")
