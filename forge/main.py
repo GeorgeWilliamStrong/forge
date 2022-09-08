@@ -38,8 +38,7 @@ class WaveformInversion_2d:
         self.u2 = None # second wavefield for time-stepping
         self.d = None # data recorded at receivers
         self.wavefield = None # full partial derivative wavefield
-        damp = np.zeros((model.shape[0], model.shape[1])) # create damping array and pad with negative exponential using optimal parameters
-        self.damp = torch.from_numpy(np.exp(-(dfac**2)*((np.pad(damp, self.bp, mode='linear_ramp', end_values=self.bp))**2))).float()
+        self.damp = torch.from_numpy(np.exp(-(dfac**2)*((np.pad(np.zeros((model.shape[0], model.shape[1])), self.bp, mode='linear_ramp', end_values=self.bp))**2))).float() # create damping array and pad with negative exponential using optimal parameters
         self.q = ((1/self.damp)-1) # derive q from damping array
         if alpha is not None: # check whether an attenuation model is provided and insert if necessary
             self.q[self.bp:-self.bp,self.bp:-self.bp] = (torch.from_numpy(alpha)*self.dt)*torch.from_numpy(model)
@@ -74,8 +73,8 @@ class WaveformInversion_2d:
             self.lap_OT4 = laplacian_10th_order # always use constant density laplacian as approximation
             self.e2 = 6 # OT4 method shrinks u by 6 cells in each dimension
         self.pred_bc = float(pred_bc) # strength of predictive boundaries
-        self.loss_history = None
-        self.rmse_history = None
+        self.loss_history = None # loss function tracking
+        self.rmse_history = None # model RMSE tracking
         self.hess = torch.zeros_like(torch.from_numpy(model)).float().to(self.device) # diagonal of the approximate Hessian
     
     def configure(self, s_pos, source):
@@ -178,7 +177,7 @@ class WaveformInversion_2d:
         # begin time-stepping 
         for i in range(len(self.s)):
             
-            sys.stdout.write(f'\r                Forward modelling | {i+1}/{len(self.s)} |')
+            sys.stdout.write(f'\r                       forward modelling | {i+1}/{len(self.s)} |')
             sys.stdout.flush()
             
             # alternate wavefield updates between u1 and u2 to avoid storing a third wavefield
@@ -261,7 +260,7 @@ class WaveformInversion_2d:
         # begin time-stepping
         for i in range(adjoint_source.size(2)-1, -1, -1):
             
-            sys.stdout.write(f'\r                Adjoint modelling | {adjoint_source.size(2)-i}/{adjoint_source.size(2)} |')
+            sys.stdout.write(f'\r                       adjoint modelling | {adjoint_source.size(2)-i}/{adjoint_source.size(2)} |')
             sys.stdout.flush()
             
             # alternate wavefield updates between u1 and u2 to avoid storing a third wavefield
@@ -316,29 +315,38 @@ class WaveformInversion_2d:
     
     def fit(self, data, s_pos, source, optimizer, loss, num_iter, bs, runs=1, blocks=None, grad_norm=True, hess_prwh=1e-9, model_callbacks = [], adjoint_callbacks=[], box=None, true_model=None):
 
+        # loss function tracking 
         self.loss_history = []
 
+        # model RMSE tracking
         if true_model is not None:
             self.rmse_history = []
         
+        # are multiple blocks required?
         if blocks is not None:
             num_blocks = len(blocks)
         else:
             num_blocks = 1
         
+        # loop over multiscale frequency blocks
         for i in range(num_blocks):
-
+            
+            print(f"""   =======================================================================""")
+            
+            # low-pass the source and the data as required by the block frequency
             if blocks is not None:
-                print(f'Block {i+1}/{num_blocks}')
+                print(f"""       block {i+1}/{num_blocks} | {blocks[i]:.4g}Hz |
+   -----------------------------------------------------------------------""")
                 s = butter_lowpass_filter(source.copy(), blocks[i], 1/self.dt, order=12)
                 data_filt = torch.from_numpy(butter_lowpass_filter(data, blocks[i], 1/self.dt, order=12)).float()
             else:
                 data_filt = data
                 s = source.copy()
-                
+            
+            # begin optimization loop 
             for j in range(num_iter):
 
-                print(f'    Iteration {j+1}/{num_iter}')
+                print(f'           iteration {j+1}/{num_iter}')
 
                 # zero the gradient
                 optimizer.zero_grad()
@@ -359,7 +367,7 @@ class WaveformInversion_2d:
                 for k in range(runs):
 
                     if runs > 1:
-                        print(f'        Batch {k+1}/{runs}')
+                        print(f'               batch {k+1}/{runs}')
 
                     # initialize corresponding source locations, wavefields and data arrays for modelling
                     self.configure(s_pos[total_batch][k*bs:k*bs+bs], s)
@@ -417,13 +425,11 @@ class WaveformInversion_2d:
                     
                 # calculate, print and record sample normalized loss value
                 f_n /= runs
-                print(f'        Loss = {f_n:.4g}')
+                print(f'               loss = {f_n:.4g}')
                 self.loss_history.append(f_n)
 
                 if true_model is not None:
                     # calculate, print and record a sample normalized model RMSE
                     rmse = torch.sqrt(((self.m_out() - true_model)**2).mean()).item()/(true_model.shape[0]*true_model.shape[1])
-                    print(f'        RMSE = {rmse:.4g}')
+                    print(f'               rmse = {rmse:.4g}')
                     self.rmse_history.append(rmse)
-
-                print('________________________________________________________________________________________________')
