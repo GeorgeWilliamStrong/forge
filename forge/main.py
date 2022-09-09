@@ -6,7 +6,7 @@ from .geometry import *
 from .utils import *
 
 
-class WaveformInversion_2d:
+class WaveInversion:
     """
     Two-dimensional full-waveform inversion class comprising:
       1. Initialisation and (GPU) memory allocation
