@@ -131,18 +131,20 @@ def generate_data(model, source, s_pos, bs):
     return d
 
 
-def interpolate_models(vp, m0, dx_original, frequency, gp_per_wavelgth=6, rho=False, logQ=False):
+def interpolate_models(vp, m0, r_geometry, s_geometry, dx, frequency, gp_per_wavelgth=6, rho=False, logQ=False):
     min_wavelength = min(vp.min(), m0.min())/frequency
-    dx = min_wavelength/gp_per_wavelgth
-    new_x = int(np.ceil(vp.shape[0]*dx_original/dx))
+    dxi = min_wavelength/gp_per_wavelgth
+    new_x = int(np.ceil(vp.shape[0]*dx/dxi))
     zoom = new_x/vp.shape[0]
     vp = np.clip(scipy.ndimage.zoom(vp, zoom), vp.min(), vp.max())
     m0 = np.clip(scipy.ndimage.zoom(m0, zoom), m0.min(), m0.max())
+    r_pos = r_geometry/dxi
+    s_pos = s_geometry/dxi
     if type(rho) != bool:
         rho = np.clip(scipy.ndimage.zoom(rho, zoom), rho.min(), rho.max())
     if type(logQ) != bool:
         logQ = np.clip(scipy.ndimage.zoom(logQ, zoom), logQ.min(), logQ.max())
-    return dx, vp, m0, rho, logQ
+    return dx, vp, m0, r_pos, s_pos, rho, logQ
 
 
 def animate(wavefield, shot=0, vmin=-2e7, vmax=2e7, interval=50):
