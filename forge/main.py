@@ -240,7 +240,7 @@ class WaveInversion:
         """
         Use the adjoint-state method to calculate the gradient.
         """
-        
+
         # allocate memory to the GPU and, if required, apply hicks interpolation
         adjoint_source = resid_hicks(adjoint_source, self.num_srcs, self.num_rec,
                             self.r_pos, self.r_pos_sizes, self.r_hicks).to(self.device)
@@ -336,11 +336,11 @@ class WaveInversion:
                 print(f'  iteration {j+1}/{num_iter}')
 
                 # zero the gradient
-                optimizer.zero_grad()
+                self.m.grad[:, :] = 0
 
                 # zero the diagonal of the approximate Hessian
                 if hess_prwh:
-                    self.hess[:,:] = 0
+                    self.hess[:, :] = 0
 
                 # empty the cache
                 torch.cuda.empty_cache()
