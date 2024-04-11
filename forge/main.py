@@ -59,89 +59,8 @@ class WaveInversion:
 
         self._set_grid(dx, dt, **kwargs)
         self._set_media(model, **kwargs)
-        self._set_acquisitions(r_pos, **kwargs)
         self._set_operators(**kwargs)
-
-    def configure(self, s_pos, source):
-        """
-        Initialise source locations, wavefields and data arrays.
-
-        Parameters
-        ----------
-        s_pos : ndarray
-            Array of two-dimensional source coordinates.
-        source : ndarray
-            One-dimensional array containing source wavelet pressure field.
-
-        Returns
-        -------
-
-        """
-        # Set the source wavelet
-        self.s = source.copy()
-
-        # Check if sources have not yet been set or if there is a different
-        # number of new and old source indices
-        if not self.s_set or len(s_pos) != self.num_srcs:
-            self.s_set = True
-            self.num_srcs = s_pos.shape[0]
-
-            # If hicks interpolation is required, set s_hicks to True
-            if type(s_pos[0, 0]) is not np.int64:
-                # Calculate source indices for hicks interpolation and
-                # corresponding kaiser windowed sinc function values
-                self.s_hicks = True
-                self.s_pos, s_kaiser_sinc = create_hicks_s_pos(s_pos,
-                                                               self.m,
-                                                               self.bp)
-                self.s_kaiser_sinc = s_kaiser_sinc.to(self.device)
-
-            # If hicks interpolation is not required, set s_hicks to False
-            else:
-                # Set kaiser windowed sinc function values to 1 and create
-                # source indices
-                self.s_hicks = False
-                self.s_kaiser_sinc = 1
-                self.s_pos = create_s_pos(s_pos, self.bp)
-
-            # Initialise wavefield and data arrays
-            self.u2 = torch.zeros(self.num_srcs,
-                                  self.m.size(0),
-                                  self.m.size(1)).float().to(self.device)
-            self.u1 = torch.zeros_like(self.u2)
-            self.d = torch.zeros(self.num_srcs,
-                                 self.r_pos.size(0),
-                                 len(self.s)).float()
-            self.wavefield = torch.zeros(
-                self.num_srcs,
-                len(self.s[::self.s_rate]),
-                self.m[self.bp:-self.bp, :].shape[0],
-                self.m[:, self.bp:-self.bp].shape[1]).float().to(self.device)
-
-        else:
-            # If hicks interpolation is required, set s_hicks to True
-            if type(s_pos[0, 0]) is not np.int64:
-                # Calculate source indices for hicks interpolation and
-                # corresponding kaiser windowed sinc function values
-                self.s_hicks = True
-                self.s_pos, s_kaiser_sinc = create_hicks_s_pos(s_pos,
-                                                               self.m,
-                                                               self.bp)
-                self.s_kaiser_sinc = s_kaiser_sinc.to(self.device)
-
-            # If hicks interpolation is not required, set s_hicks to False
-            else:
-                # Set kaiser windowed sinc function values to 1 and create
-                # source indices
-                self.s_hicks = False
-                self.s_kaiser_sinc = 1
-                self.s_pos = create_s_pos(s_pos, self.bp)
-
-            # Reinitialise data array as d_hicks_to_d changes dimensionalality
-            # of 2nd dimension
-            self.d = torch.zeros(self.num_srcs,
-                                 self.r_pos.size(0),
-                                 len(source)).float()
+        self._set_problem(r_pos, **kwargs)
 
     def forward(self):
         """
@@ -500,7 +419,48 @@ class WaveInversion:
         self.hess = torch.zeros_like(
             torch.from_numpy(model)).float().to(self.device)
 
-    def _set_acquisitions(self, r_pos, **kwargs):
+    def _set_operators(self, **kwargs):
+        """
+        Define instance variables to handle boundary and ot4 operators.
+
+        Parameters
+        ----------
+        **kwargs : additional keyword arguments
+            pred_bc : float, optional
+                Predictive boundary coefficient. Defaults to 1.
+            ot4 : bool, optional
+                4th order accurate in time scheme. Defaults to True.
+
+        Returns
+        -------
+
+        """
+        # Define strength of predictive boundaries
+        self.pred_bc = float(kwargs.pop('pred_bc', 1))
+
+        # Set 4th order accurate in time flag
+        self.ot4 = kwargs.pop('ot4', True)
+
+        if self.b is not None:
+            # Variable density Laplacian shrinks u by 9 cells in each dimension
+            self.e = 9
+            # Set the variable density predictive boundary function
+            self.pred = partial(predictive_boundary,
+                                pred_bc=self.pred_bc,
+                                rho=True)
+        else:
+            # Constant density Laplacian shrinks u by 5 cells in each dimension
+            self.e = 5
+            # Set the constant density predictive boundary function
+            self.pred = partial(predictive_boundary,
+                                pred_bc=self.pred_bc,
+                                rho=False)
+
+        if self.ot4:
+            # OT4 method shrinks u by 6 cells in each dimension
+            self.e2 = 6
+
+    def _set_problem(self, r_pos, **kwargs):
         """
         Define instance variables to handle acquisitions and geometry.
 
@@ -550,43 +510,83 @@ class WaveInversion:
         self.num_srcs = None  # Number of sources
         self.s_hicks = None  # Source hicks boolean
 
-    def _set_operators(self, **kwargs):
+    def _source_interp(self, s_pos):
         """
-        Define instance variables to handle boundary and ot4 operators.
+        Apply Hicks interpolation to source geometry coordinates, if necessary.
 
         Parameters
         ----------
-        **kwargs : additional keyword arguments
-            pred_bc : float, optional
-                Predictive boundary coefficient. Defaults to 1.
-            ot4 : bool, optional
-                4th order accurate in time scheme. Defaults to True.
+        s_pos : ndarray
+            Array of two-dimensional source coordinates.
 
         Returns
         -------
 
         """
-        # Define strength of predictive boundaries
-        self.pred_bc = float(kwargs.pop('pred_bc', 1))
+        # If hicks interpolation is required, set s_hicks to True
+        if type(s_pos[0, 0]) is not np.int64:
+            # Calculate source indices for hicks interpolation and
+            # corresponding kaiser windowed sinc function values
+            self.s_hicks = True
+            self.s_pos, s_kaiser_sinc = create_hicks_s_pos(s_pos,
+                                                           self.m,
+                                                           self.bp)
+            self.s_kaiser_sinc = s_kaiser_sinc.to(self.device)
 
-        # Set 4th order accurate in time flag
-        self.ot4 = kwargs.pop('ot4', True)
-
-        if self.b is not None:
-            # Variable density Laplacian shrinks u by 9 cells in each dimension
-            self.e = 9
-            # Set the variable density predictive boundary function
-            self.pred = partial(predictive_boundary,
-                                pred_bc=self.pred_bc,
-                                rho=True)
+        # If hicks interpolation is not required, set s_hicks to False
         else:
-            # Constant density Laplacian shrinks u by 5 cells in each dimension
-            self.e = 5
-            # Set the constant density predictive boundary function
-            self.pred = partial(predictive_boundary,
-                                pred_bc=self.pred_bc,
-                                rho=False)
+            # Set kaiser windowed sinc function values to 1 and create
+            # source indices
+            self.s_hicks = False
+            self.s_kaiser_sinc = 1
+            self.s_pos = create_s_pos(s_pos, self.bp)
 
-        if self.ot4:
-            # OT4 method shrinks u by 6 cells in each dimension
-            self.e2 = 6
+    def _set_batch(self, s_pos, source):
+        """
+        Initialise source locations, wavefields and data arrays for a batch.
+
+        Parameters
+        ----------
+        s_pos : ndarray
+            Array of two-dimensional source coordinates.
+        source : ndarray
+            One-dimensional array containing source wavelet pressure field.
+
+        Returns
+        -------
+
+        """
+        self.s = source.copy()
+
+        # Check if sources have not yet been set or if there is a different
+        # number of new and old source indices
+        if not self.s_set or len(s_pos) != self.num_srcs:
+            self.s_set = True
+            self.num_srcs = s_pos.shape[0]
+
+            # Apply hicks interpolation if necessary
+            self._source_interp(self, s_pos)
+
+            # Initialise wavefield and data arrays
+            self.u2 = torch.zeros(self.num_srcs,
+                                  self.m.size(0),
+                                  self.m.size(1)).float().to(self.device)
+            self.u1 = torch.zeros_like(self.u2)
+            self.d = torch.zeros(self.num_srcs,
+                                 self.r_pos.size(0),
+                                 len(self.s)).float()
+            self.wavefield = torch.zeros(
+                self.num_srcs,
+                len(self.s[::self.s_rate]),
+                self.m[self.bp:-self.bp, :].shape[0],
+                self.m[:, self.bp:-self.bp].shape[1]).float().to(self.device)
+
+        else:
+            # Apply hicks interpolation if necessary
+            self._source_interp(self, s_pos)
+
+            # Reinitialise data array as d_hicks_to_d changes dimensionalality
+            # of 2nd dimension
+            self.d = torch.zeros(self.num_srcs,
+                                 self.r_pos.size(0),
+                                 len(source)).float()
