@@ -15,22 +15,28 @@ class WaveInversion:
       4. Calculate the gradient using the adjoint-state method
       5. Multi-scale optimization loop
     """
-    
-    
-    def __init__(self, model, dx, dt, r_pos, sampling_rate=1, bpoints=45, pred_bc=1, alpha=None, rho=None, OT4=True, kernel='Taylor', dfac=0.0053, device="cuda:0"):
+
+
+    def __init__(self, model, dx, dt, r_pos, **kwargs):
+
         """
         Initialise class variables and allocate memory.
         """
-        
-        self.device = torch.device(device if torch.cuda.is_available() else "cpu") # use a GPU if available
+
+        # sampling_rate=1, bpoints=45, pred_bc=1, alpha=None, rho=None, OT4=True, dfac=0.0053, device="cuda:0"):
+
+        device = kwargs.pop('device', 'cuda:0')
+        self.device = torch.device(device if torch.cuda.is_available() else 'cpu') # use a GPU if available
         print(f'device = {self.device}')
-        self.bp = int(bpoints) # number of additional boundary points for absorbing boundaries
-        self.m = 1/torch.from_numpy(np.pad(model, self.bp, mode='edge')).float().to(self.device) # model in slowness
-        self.m.grad = torch.zeros_like(self.m) # gradient 
-        self.dx = float(dx) # spatial increment or distance between adjacent grid points
-        self.dx_sq = float(dx**2) # convenience
-        self.dt = float(dt) # time increment or time between adjacent time samples
-        self.dt_sq = float(dt**2) # convenience
+
+        self._set_grid(dx, dt, **kwargs)
+
+        self._set_medium(model, **kwargs)
+
+        #self._set_acquisitions(r_pos, **kwargs)
+
+        #self._set_operators(**kwargs)
+
         self.r_pos = torch.from_numpy(r_pos[:]+self.bp) # receiver locations as indexes
         self.s_rate = int(sampling_rate) # wavefield sampling rate
         self.s = None # source wavelet
@@ -38,11 +44,6 @@ class WaveInversion:
         self.u2 = None # second wavefield for time-stepping
         self.d = None # data recorded at receivers
         self.wavefield = None # full partial derivative wavefield
-        self.damp = torch.from_numpy(np.exp(-(dfac**2)*((np.pad(np.zeros((model.shape[0], model.shape[1])), self.bp, mode='linear_ramp', end_values=self.bp))**2))).float() # create damping array and pad with negative exponential using optimal parameters
-        self.q = ((1/self.damp)-1) # derive q from damping array
-        if alpha is not None: # check whether an attenuation model is provided and insert if necessary
-            self.q[self.bp:-self.bp,self.bp:-self.bp] = (torch.from_numpy(alpha)*self.dt)*torch.from_numpy(model)
-        self.q = self.q.to(self.device)
         self.s_pos = None # source indexes
         self.num_srcs = None # number of sources
         self.s_kaiser_sinc = 1 # source kaiser windowed sinc function values 
@@ -57,26 +58,117 @@ class WaveInversion:
             self.r_hicks = False 
             self.r_kaiser_sinc = 1
             self.r_pos_sizes = False
-        self.kernel = kernel # select fullwave high kernel or Taylor series finite difference coefficients
-        if rho is not None: # check whether variable density propagator is required
-            self.b = 1/torch.from_numpy(np.pad(rho, self.bp, mode='edge')).float().to(self.device) # store density model in buoyancy
-            self.lap = laplacian_10th_order_density # use variable density laplacian
+        if self.b is not None: # check whether variable density propagator is required
             self.e = 9 # laplacian shrinks u by 9 cells in each dimension
             self.pred = pred_bc_10th_order_density # set the variable density predictive boundary function
         else: # if constant density propagator is required
-            self.b = rho # store False value in self.b
-            self.lap = laplacian_10th_order # use constant density laplacian
             self.e = 5 # laplacian shrinks u by 5 cells in each dimension
             self.pred = pred_bc_10th_order # set the constant density predictive boundary function
         self.OT4 = OT4
         if self.OT4 == True: # check if OT4 accuracy is required
-            self.lap_OT4 = laplacian_10th_order # always use constant density laplacian as approximation
             self.e2 = 6 # OT4 method shrinks u by 6 cells in each dimension
         self.pred_bc = float(pred_bc) # strength of predictive boundaries
         self.loss_history = None # loss function tracking
         self.rmse_history = None # model RMSE tracking
-        self.hess = torch.zeros_like(torch.from_numpy(model)).float().to(self.device) # diagonal of the approximate Hessian
-    
+
+    def _set_grid(self, dx, dt, **kwargs):
+        """
+        Define instance variables to handle grid sampling and boundary cells.
+
+        Parameters
+        ----------
+        dx : float
+            Spatial increment.
+        dt : float
+            Temporal increment.
+        **kwargs : additional keyword arguments
+            boundary_points : int, optional
+                Number of additional boundary points for absorbing boundaries.
+                Defaults to 45.
+
+        Returns
+        -------
+
+        """
+        self.dx = float(dx)
+        self.dx_sq = float(dx**2)
+
+        self.dt = float(dt)
+        self.dt_sq = float(dt**2)
+
+        bp = kwargs.pop('boundary_points', 45)
+        assert bp > 10, 'There must be at least 10 boundary points.'
+        self.bp = int(bp)
+
+    def _set_medium(self, model, **kwargs):
+        """
+        Define instance variables to handle various media required for FWI.
+
+        Parameters
+        ----------
+        model : ndarray
+            Two-dimensional acoustic velocity model.
+        **kwargs : additional keyword arguments
+            damping_factor : float
+                Variable that controls the strength of damping applied in
+                absorbing boundary layer. Defaults to 0.0053.
+            alpha : ndarray
+                Attenuation coefficient model in Np/m derived as follows:
+                alpha = (pi*f)/(Q*vp),
+                where f is the frequency in Hz, Q is the dimensionsless quality
+                factor and vp is the acoustic velocity in m/s. Defaults to
+                None.
+            rho : ndarray
+                Density model in kg/m^3. Defaults to None.
+
+        Returns
+        -------
+
+        """
+        damping_factor = kwargs.pop('damping_factor', 0.0053)
+        alpha = kwargs.pop('alpha', None)
+        rho = kwargs.pop('rho', None)
+        shape = model.shape
+
+        # Store model in slowness and allocate to device
+        self.m = 1/torch.from_numpy(
+            np.pad(model,
+                   self.bp,
+                   mode='edge')).float().to(self.device)
+
+        # Create damping array, pad with neg. exponential using optimal params
+        self.damp = torch.from_numpy(np.exp(-(damping_factor**2)*((np.pad(
+            np.zeros((shape[0], shape[1])),
+            self.bp,
+            mode='linear_ramp',
+            end_values=self.bp))**2))).float()
+
+        # Derive default attenuation model from damping array
+        self.q = (1/self.damp)-1
+
+        # Insert attenuation model if provided
+        if alpha is not None:
+            self.q[self.bp:-self.bp, self.bp:-self.bp] = \
+                (torch.from_numpy(alpha)*self.dt)*torch.from_numpy(model)
+        self.q = self.q.to(self.device)
+
+        if rho is not None:
+            # Store density model as buoyancy
+            self.b = 1/torch.from_numpy(
+                np.pad(rho,
+                       self.bp,
+                       mode='edge')).float().to(self.device)
+        else:
+            self.b = None
+
+        # Populate model gradient TODO: move this to .fit()?
+        self.m.grad = torch.zeros_like(self.m)
+
+        # Diagonal of the approximate Hessian TODO: move this to .fit()?
+        self.hess = torch.zeros_like(
+            torch.from_numpy(model)).float().to(self.device)
+
+
     def configure(self, s_pos, source):
         """
         Initialise source locations, wavefields and data arrays.
@@ -109,7 +201,7 @@ class WaveInversion:
             
             # initialise wavefield and data arrays
             self.u2 = torch.zeros(self.num_srcs, self.m.size(0), self.m.size(1)).float().to(self.device)
-            self.u1 = torch.zeros(self.num_srcs, self.m.size(0), self.m.size(1)).float().to(self.device)
+            self.u1 = torch.zeros_like(self.u2)
             self.d = torch.zeros(self.num_srcs, self.r_pos.size(0), len(self.s)).float()
             self.wavefield = torch.zeros(self.num_srcs, len(self.s[::self.s_rate]), self.m[self.bp:-self.bp, :].shape[0], self.m[:, self.bp:-self.bp].shape[1]).float().to(self.device)
         
@@ -158,7 +250,7 @@ class WaveInversion:
             
             # reinitialise wavefield and data arrays
             self.u2 = torch.zeros(self.num_srcs, self.m.size(0), self.m.size(1)).float().to(self.device)
-            self.u1 = torch.zeros(self.num_srcs, self.m.size(0), self.m.size(1)).float().to(self.device)
+            self.u1 = torch.zeros_like(self.u2)
             self.d = torch.zeros(self.num_srcs, self.r_pos.size(0), len(self.s)).float()
             self.wavefield = torch.zeros(self.num_srcs, len(self.s[::self.s_rate]), self.m[self.bp:-self.bp, :].shape[0], self.m[:, self.bp:-self.bp].shape[1]).float().to(self.device)
     
@@ -188,11 +280,11 @@ class WaveInversion:
                     self.wavefield[:, int(i/self.s_rate), :, :] = self.u2[:, self.bp:-self.bp, self.bp:-self.bp]
                 
                 # step forward in time and update the wavefield 
-                self.u2[:, self.e:-self.e, self.e:-self.e] = ((self.dt_sq/(self.m[self.e:-self.e, self.e:-self.e]**2))*self.lap(self.u1, self.dx_sq, self.b, self.kernel)+(2-self.q[self.e:-self.e, self.e:-self.e]**2)*self.u1[:, self.e:-self.e, self.e:-self.e]-(1-self.q[self.e:-self.e, self.e:-self.e])*self.u2[:, self.e:-self.e, self.e:-self.e])/(1+self.q[self.e:-self.e, self.e:-self.e])
+                self.u2[:, self.e:-self.e, self.e:-self.e] = ((self.dt_sq/(self.m[self.e:-self.e, self.e:-self.e]**2))*laplacian(self.u1, self.dx_sq, self.b)+(2-self.q[self.e:-self.e, self.e:-self.e]**2)*self.u1[:, self.e:-self.e, self.e:-self.e]-(1-self.q[self.e:-self.e, self.e:-self.e])*self.u2[:, self.e:-self.e, self.e:-self.e])/(1+self.q[self.e:-self.e, self.e:-self.e])
                 
                 # ot4 step
                 if self.OT4 == True:
-                    self.u2[:, self.e2:-self.e2, self.e2:-self.e2] += (((self.dt**4)/(12*self.dx_sq*self.m[self.e2:-self.e2, self.e2:-self.e2]**4))*(self.lap_OT4(self.u1[:,2:,1:-1], self.dx_sq, self.b, 'Taylor')+self.lap_OT4(self.u1[:,:-2,1:-1], self.dx_sq, self.b, 'Taylor')+self.lap_OT4(self.u1[:,1:-1,2:], self.dx_sq, self.b, 'Taylor')+self.lap_OT4(self.u1[:,1:-1,:-2], self.dx_sq, self.b, 'Taylor')-4*self.lap_OT4(self.u1[:,1:-1,1:-1], self.dx_sq, self.b, 'Taylor')))/(1+self.q[self.e2:-self.e2, self.e2:-self.e2])
+                    self.u2[:, self.e2:-self.e2, self.e2:-self.e2] += (((self.dt**4)/(12*self.dx_sq*self.m[self.e2:-self.e2, self.e2:-self.e2]**4))*(laplacian(self.u1[:,2:,1:-1], self.dx_sq, None)+laplacian(self.u1[:,:-2,1:-1], self.dx_sq, None)+laplacian(self.u1[:,1:-1,2:], self.dx_sq, None)+laplacian(self.u1[:,1:-1,:-2], self.dx_sq, None)-4*laplacian(self.u1[:,1:-1,1:-1], self.dx_sq, None)))/(1+self.q[self.e2:-self.e2, self.e2:-self.e2])
 
                 # inject the source wavelet
                 self.u2[self.s_pos[:, 0], self.s_pos[:, 1], self.s_pos[:, 2]] += (((self.dt_sq*self.s[i])/((self.m[self.s_pos[:, 1], self.s_pos[:, 2]]**2)*self.dx_sq))/(1-self.q[self.s_pos[:, 1], self.s_pos[:, 2]]))*self.s_kaiser_sinc
@@ -215,11 +307,11 @@ class WaveInversion:
                     self.wavefield[:, int(i/self.s_rate), :, :] = self.u1[:, self.bp:-self.bp, self.bp:-self.bp]
                 
                 # step forward in time and update the wavefield 
-                self.u1[:, self.e:-self.e, self.e:-self.e] = ((self.dt_sq/(self.m[self.e:-self.e, self.e:-self.e]**2))*self.lap(self.u2, self.dx_sq, self.b, self.kernel)+(2-self.q[self.e:-self.e, self.e:-self.e]**2)*self.u2[:, self.e:-self.e, self.e:-self.e]-(1-self.q[self.e:-self.e, self.e:-self.e])*self.u1[:, self.e:-self.e, self.e:-self.e])/(1+self.q[self.e:-self.e, self.e:-self.e])
+                self.u1[:, self.e:-self.e, self.e:-self.e] = ((self.dt_sq/(self.m[self.e:-self.e, self.e:-self.e]**2))*laplacian(self.u2, self.dx_sq, self.b)+(2-self.q[self.e:-self.e, self.e:-self.e]**2)*self.u2[:, self.e:-self.e, self.e:-self.e]-(1-self.q[self.e:-self.e, self.e:-self.e])*self.u1[:, self.e:-self.e, self.e:-self.e])/(1+self.q[self.e:-self.e, self.e:-self.e])
                 
                 # ot4 step
                 if self.OT4 == True:
-                    self.u1[:, self.e2:-self.e2, self.e2:-self.e2] += (((self.dt**4)/(12*self.dx_sq*self.m[self.e2:-self.e2, self.e2:-self.e2]**4))*(self.lap_OT4(self.u2[:,2:,1:-1], self.dx_sq, self.b, 'Taylor')+self.lap_OT4(self.u2[:,:-2,1:-1], self.dx_sq, self.b, 'Taylor')+self.lap_OT4(self.u2[:,1:-1,2:], self.dx_sq, self.b, 'Taylor')+self.lap_OT4(self.u2[:,1:-1,:-2], self.dx_sq, self.b, 'Taylor')-4*self.lap_OT4(self.u2[:,1:-1,1:-1], self.dx_sq, self.b, 'Taylor')))/(1+self.q[self.e2:-self.e2, self.e2:-self.e2])
+                    self.u1[:, self.e2:-self.e2, self.e2:-self.e2] += (((self.dt**4)/(12*self.dx_sq*self.m[self.e2:-self.e2, self.e2:-self.e2]**4))*(laplacian(self.u2[:,2:,1:-1], self.dx_sq, None)+laplacian(self.u2[:,:-2,1:-1], self.dx_sq, None)+laplacian(self.u2[:,1:-1,2:], self.dx_sq, None)+laplacian(self.u2[:,1:-1,:-2], self.dx_sq, None)-4*laplacian(self.u2[:,1:-1,1:-1], self.dx_sq, None)))/(1+self.q[self.e2:-self.e2, self.e2:-self.e2])
                 
                 # inject the source wavelet
                 self.u1[self.s_pos[:, 0], self.s_pos[:, 1], self.s_pos[:, 2]] += (((self.dt_sq*self.s[i])/((self.m[self.s_pos[:, 1], self.s_pos[:, 2]]**2)*self.dx_sq))/(1-self.q[self.s_pos[:, 1], self.s_pos[:, 2]]))*self.s_kaiser_sinc
@@ -259,11 +351,11 @@ class WaveInversion:
             if i%2==0:
                 
                 # step forward in time and update the wavefield 
-                self.u2[:, self.e:-self.e, self.e:-self.e] = ((self.dt_sq/(self.m[self.e:-self.e, self.e:-self.e]**2))*self.lap(self.u1, self.dx_sq, self.b, self.kernel)+(2-self.q[self.e:-self.e, self.e:-self.e]**2)*self.u1[:, self.e:-self.e, self.e:-self.e]-(1-self.q[self.e:-self.e, self.e:-self.e])*self.u2[:, self.e:-self.e, self.e:-self.e])/(1+self.q[self.e:-self.e, self.e:-self.e])
+                self.u2[:, self.e:-self.e, self.e:-self.e] = ((self.dt_sq/(self.m[self.e:-self.e, self.e:-self.e]**2))*laplacian(self.u1, self.dx_sq, self.b)+(2-self.q[self.e:-self.e, self.e:-self.e]**2)*self.u1[:, self.e:-self.e, self.e:-self.e]-(1-self.q[self.e:-self.e, self.e:-self.e])*self.u2[:, self.e:-self.e, self.e:-self.e])/(1+self.q[self.e:-self.e, self.e:-self.e])
                 
                 # ot4 step
                 if self.OT4 == True:
-                    self.u2[:, self.e2:-self.e2, self.e2:-self.e2] += (((self.dt**4)/(12*self.dx_sq*self.m[self.e2:-self.e2, self.e2:-self.e2]**4))*(self.lap_OT4(self.u1[:,2:,1:-1], self.dx_sq, self.b, 'Taylor')+self.lap_OT4(self.u1[:,:-2,1:-1], self.dx_sq, self.b, 'Taylor')+self.lap_OT4(self.u1[:,1:-1,2:], self.dx_sq, self.b, 'Taylor')+self.lap_OT4(self.u1[:,1:-1,:-2], self.dx_sq, self.b, 'Taylor')-4*self.lap_OT4(self.u1[:,1:-1,1:-1], self.dx_sq, self.b, 'Taylor')))/(1+self.q[self.e2:-self.e2, self.e2:-self.e2])
+                    self.u2[:, self.e2:-self.e2, self.e2:-self.e2] += (((self.dt**4)/(12*self.dx_sq*self.m[self.e2:-self.e2, self.e2:-self.e2]**4))*(laplacian(self.u1[:,2:,1:-1], self.dx_sq, None)+laplacian(self.u1[:,:-2,1:-1], self.dx_sq, None)+laplacian(self.u1[:,1:-1,2:], self.dx_sq, None)+laplacian(self.u1[:,1:-1,:-2], self.dx_sq, None)-4*laplacian(self.u1[:,1:-1,1:-1], self.dx_sq, None)))/(1+self.q[self.e2:-self.e2, self.e2:-self.e2])
 
                 # inject the adjoint source at all receiver locations
                 self.u2[:, self.r_pos[:, 0], self.r_pos[:, 1]] += (((self.dt_sq*adjoint_source[:, :, i])/((self.m[self.r_pos[:, 0], self.r_pos[:, 1]]**2)*self.dx_sq))/(1-self.q[self.r_pos[:, 0], self.r_pos[:, 1]]))*self.r_kaiser_sinc
@@ -280,11 +372,11 @@ class WaveInversion:
             else:
                 
                 # step forward in time and update the wavefield 
-                self.u1[:, self.e:-self.e, self.e:-self.e] = ((self.dt_sq/(self.m[self.e:-self.e, self.e:-self.e]**2))*self.lap(self.u2, self.dx_sq, self.b, self.kernel)+(2-self.q[self.e:-self.e, self.e:-self.e]**2)*self.u2[:, self.e:-self.e, self.e:-self.e]-(1-self.q[self.e:-self.e, self.e:-self.e])*self.u1[:, self.e:-self.e, self.e:-self.e])/(1+self.q[self.e:-self.e, self.e:-self.e])
+                self.u1[:, self.e:-self.e, self.e:-self.e] = ((self.dt_sq/(self.m[self.e:-self.e, self.e:-self.e]**2))*laplacian(self.u2, self.dx_sq, self.b)+(2-self.q[self.e:-self.e, self.e:-self.e]**2)*self.u2[:, self.e:-self.e, self.e:-self.e]-(1-self.q[self.e:-self.e, self.e:-self.e])*self.u1[:, self.e:-self.e, self.e:-self.e])/(1+self.q[self.e:-self.e, self.e:-self.e])
                 
                 # ot4 step
                 if self.OT4 == True:
-                    self.u1[:, self.e2:-self.e2, self.e2:-self.e2] += (((self.dt**4)/(12*self.dx_sq*self.m[self.e2:-self.e2, self.e2:-self.e2]**4))*(self.lap_OT4(self.u2[:,2:,1:-1], self.dx_sq, self.b, 'Taylor')+self.lap_OT4(self.u2[:,:-2,1:-1], self.dx_sq, self.b, 'Taylor')+self.lap_OT4(self.u2[:,1:-1,2:], self.dx_sq, self.b, 'Taylor')+self.lap_OT4(self.u2[:,1:-1,:-2], self.dx_sq, self.b, 'Taylor')-4*self.lap_OT4(self.u2[:,1:-1,1:-1], self.dx_sq, self.b, 'Taylor')))/(1+self.q[self.e2:-self.e2, self.e2:-self.e2])
+                    self.u1[:, self.e2:-self.e2, self.e2:-self.e2] += (((self.dt**4)/(12*self.dx_sq*self.m[self.e2:-self.e2, self.e2:-self.e2]**4))*(laplacian(self.u2[:,2:,1:-1], self.dx_sq, None)+laplacian(self.u2[:,:-2,1:-1], self.dx_sq, None)+laplacian(self.u2[:,1:-1,2:], self.dx_sq, None)+laplacian(self.u2[:,1:-1,:-2], self.dx_sq, None)-4*laplacian(self.u2[:,1:-1,1:-1], self.dx_sq, None)))/(1+self.q[self.e2:-self.e2, self.e2:-self.e2])
                 
                 # inject the adjoint source at all receiver locations
                 self.u1[:, self.r_pos[:, 0], self.r_pos[:, 1]] += (((self.dt_sq*adjoint_source[:, :, i])/((self.m[self.r_pos[:, 0], self.r_pos[:, 1]]**2)*self.dx_sq))/(1-self.q[self.r_pos[:, 0], self.r_pos[:, 1]]))*self.r_kaiser_sinc
@@ -305,7 +397,7 @@ class WaveInversion:
     
     def fit(self, data, s_pos, source, optimizer, loss, num_iter, bs, runs=1, blocks=None, grad_norm=True, hess_prwh=1e-9, model_callbacks = [], adjoint_callbacks=[], box=None, true_model=None):
 
-        # loss function tracking 
+        # loss function tracking
         self.loss_history = []
 
         # model RMSE tracking
