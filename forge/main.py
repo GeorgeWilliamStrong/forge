@@ -1,8 +1,9 @@
 import torch
 import numpy as np
 from tqdm import tqdm
-from .laplacian import *
-from .geometry import *
+from functools import partial
+from .laplacian import laplacian, pred_boundary
+from .geometry import create_hicks_r_pos
 from .utils import *
 
 
@@ -31,41 +32,21 @@ class WaveInversion:
 
         self._set_grid(dx, dt, **kwargs)
 
-        self._set_medium(model, **kwargs)
+        self._set_media(model, **kwargs)
 
-        #self._set_acquisitions(r_pos, **kwargs)
+        self._set_acquisitions(r_pos, **kwargs)
 
-        #self._set_operators(**kwargs)
+        self._set_operators(**kwargs)
 
-        self.r_pos = torch.from_numpy(r_pos[:]+self.bp) # receiver locations as indexes
-        self.s_rate = int(sampling_rate) # wavefield sampling rate
-        self.s = None # source wavelet
-        self.u1 = None # first wavefield for time-stepping
-        self.u2 = None # second wavefield for time-stepping
-        self.d = None # data recorded at receivers
-        self.wavefield = None # full partial derivative wavefield
-        self.s_pos = None # source indexes
-        self.num_srcs = None # number of sources
-        self.s_kaiser_sinc = 1 # source kaiser windowed sinc function values 
-        self.s_hicks = None # source hicks boolean
-        self.s_set = False # source set boolean
-        self.num_rec = self.r_pos.size(0) # number of receivers
-        if type(self.r_pos[0, 0].item()) != int: # check whether hicks interpolation is required
-            self.r_hicks = True # receiver hicks boolean
-            self.r_pos, self.r_kaiser_sinc, self.r_pos_sizes = create_hicks_r_pos(self.r_pos, self.m) # receiver hicks interpolation
-            self.r_kaiser_sinc = self.r_kaiser_sinc.to(self.device)
-        else:
-            self.r_hicks = False 
-            self.r_kaiser_sinc = 1
-            self.r_pos_sizes = False
+
         if self.b is not None: # check whether variable density propagator is required
             self.e = 9 # laplacian shrinks u by 9 cells in each dimension
-            self.pred = pred_bc_10th_order_density # set the variable density predictive boundary function
+            self.pred = partial(pred_boundary, rho=True) # set the variable density predictive boundary function
         else: # if constant density propagator is required
             self.e = 5 # laplacian shrinks u by 5 cells in each dimension
-            self.pred = pred_bc_10th_order # set the constant density predictive boundary function
+            self.pred = partial(pred_boundary, rho=False) # set the constant density predictive boundary function
         self.OT4 = OT4
-        if self.OT4 == True: # check if OT4 accuracy is required
+        if self.OT4: # check if OT4 accuracy is required
             self.e2 = 6 # OT4 method shrinks u by 6 cells in each dimension
         self.pred_bc = float(pred_bc) # strength of predictive boundaries
         self.loss_history = None # loss function tracking
@@ -100,7 +81,7 @@ class WaveInversion:
         assert bp > 10, 'There must be at least 10 boundary points.'
         self.bp = int(bp)
 
-    def _set_medium(self, model, **kwargs):
+    def _set_media(self, model, **kwargs):
         """
         Define instance variables to handle various media required for FWI.
 
@@ -168,6 +149,55 @@ class WaveInversion:
         self.hess = torch.zeros_like(
             torch.from_numpy(model)).float().to(self.device)
 
+    def _set_acquisitions(self, r_pos, **kwargs):
+        """
+        Define instance variables to handle acquisitions and geometry.
+
+        Parameters
+        ----------
+        r_pos : ndarray
+            Array of two-dimensional receiver coordinates.
+        **kwargs : additional keyword arguments
+            sampling_rte : int
+                Wavefield sampling rate. Defaults to 1.
+
+        Returns
+        -------
+
+        """
+        # Set receiver locations as indexes and add on boundary points
+        self.r_pos = torch.from_numpy(r_pos[:] + self.bp)
+
+        # Set wavefield sampling rate
+        self.s_rate = int(kwargs.pop('sampling_rate', 1))
+
+        # Source kaiser windowed sinc function values
+        self.s_kaiser_sinc = 1
+        self.s_set = False  # Source set boolean
+        self.num_rec = self.r_pos.size(0)  # Number of receivers
+
+        # Check whether hicks interpolation is required
+        if type(self.r_pos[0, 0].item()) != int:
+            self.r_hicks = True  # Receiver hicks boolean
+
+            # Receiver hicks interpolation
+            self.r_pos, self.r_kaiser_sinc, self.r_pos_sizes = \
+                create_hicks_r_pos(self.r_pos, self.m)
+            self.r_kaiser_sinc = self.r_kaiser_sinc.to(self.device)
+        else:
+            self.r_hicks = False
+            self.r_kaiser_sinc = 1
+            self.r_pos_sizes = False
+
+        # Set instance variables to None before they have been set
+        self.s = None  # Source wavelet
+        self.u1 = None  # First wavefield for time-stepping
+        self.u2 = None  # Second wavefield for time-stepping
+        self.d = None  # Data recorded at receivers
+        self.wavefield = None  # Full partial derivative wavefield
+        self.s_pos = None  # Source indexes
+        self.num_srcs = None  # Number of sources
+        self.s_hicks = None  # Source hicks boolean
 
     def configure(self, s_pos, source):
         """
@@ -184,7 +214,7 @@ class WaveInversion:
             self.num_srcs = s_pos.shape[0] # store the number of physical sources
             
             # if hicks interpolation is required, set s_hicks to true
-            if type(s_pos[0,0]) != np.int64:
+            if type(s_pos[0, 0]) != np.int64:
                 self.s_hicks = True
                 
                 # calculate source indexes for hicks interpolation and corresponding kaiser windowed sinc function values
@@ -209,7 +239,7 @@ class WaveInversion:
         elif len(s_pos)==self.num_srcs:
             
             # if hicks interpolation is required, set s_hicks to true
-            if type(s_pos[0,0]) != np.int64:
+            if type(s_pos[0, 0]) != np.int64:
                 self.s_hicks = True
                 
                 # calculate source indexes for hicks interpolation and corresponding kaiser windowed sinc function values
@@ -233,7 +263,7 @@ class WaveInversion:
             self.num_srcs = s_pos.shape[0] # store the number of physical sources
             
             # if hicks interpolation is required, set s_hicks to true
-            if type(s_pos[0,0]) != np.int64:
+            if type(s_pos[0, 0]) != np.int64:
                 self.s_hicks = True
                 
                 # calculate source indexes for hicks interpolation and corresponding kaiser windowed sinc function values
