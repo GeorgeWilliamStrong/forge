@@ -2,289 +2,147 @@ import torch
 import numpy as np
 from tqdm import tqdm
 from functools import partial
-from .laplacian import laplacian, pred_boundary
-from .geometry import create_hicks_r_pos
+from .laplacian import laplacian
+from .boundary import predictive_boundary
+from .geometry import create_hicks_r_pos, create_hicks_s_pos, create_s_pos
 from .utils import *
 
 
 class WaveInversion:
-    """
-    Two-dimensional full-waveform inversion class comprising:
-      1. Initialisation and (GPU) memory allocation
-      2. Configuration of the source wavelet, source locations, wavefields and data tensors
-      3. Solving the forward problem G(m) = d
-      4. Calculate the gradient using the adjoint-state method
-      5. Multi-scale optimization loop
-    """
-
-
     def __init__(self, model, dx, dt, r_pos, **kwargs):
-
         """
-        Initialise class variables and allocate memory.
-        """
-
-        # sampling_rate=1, bpoints=45, pred_bc=1, alpha=None, rho=None, OT4=True, dfac=0.0053, device="cuda:0"):
-
-        device = kwargs.pop('device', 'cuda:0')
-        self.device = torch.device(device if torch.cuda.is_available() else 'cpu') # use a GPU if available
-        print(f'device = {self.device}')
-
-        self._set_grid(dx, dt, **kwargs)
-
-        self._set_media(model, **kwargs)
-
-        self._set_acquisitions(r_pos, **kwargs)
-
-        self._set_operators(**kwargs)
-
-
-        if self.b is not None: # check whether variable density propagator is required
-            self.e = 9 # laplacian shrinks u by 9 cells in each dimension
-            self.pred = partial(pred_boundary, rho=True) # set the variable density predictive boundary function
-        else: # if constant density propagator is required
-            self.e = 5 # laplacian shrinks u by 5 cells in each dimension
-            self.pred = partial(pred_boundary, rho=False) # set the constant density predictive boundary function
-        self.OT4 = OT4
-        if self.OT4: # check if OT4 accuracy is required
-            self.e2 = 6 # OT4 method shrinks u by 6 cells in each dimension
-        self.pred_bc = float(pred_bc) # strength of predictive boundaries
-        self.loss_history = None # loss function tracking
-        self.rmse_history = None # model RMSE tracking
-
-    def _set_grid(self, dx, dt, **kwargs):
-        """
-        Define instance variables to handle grid sampling and boundary cells.
-
-        Parameters
-        ----------
-        dx : float
-            Spatial increment.
-        dt : float
-            Temporal increment.
-        **kwargs : additional keyword arguments
-            boundary_points : int, optional
-                Number of additional boundary points for absorbing boundaries.
-                Defaults to 45.
-
-        Returns
-        -------
-
-        """
-        self.dx = float(dx)
-        self.dx_sq = float(dx**2)
-
-        self.dt = float(dt)
-        self.dt_sq = float(dt**2)
-
-        bp = kwargs.pop('boundary_points', 45)
-        assert bp > 10, 'There must be at least 10 boundary points.'
-        self.bp = int(bp)
-
-    def _set_media(self, model, **kwargs):
-        """
-        Define instance variables to handle various media required for FWI.
+        Initialise instance variables and allocate memory.
 
         Parameters
         ----------
         model : ndarray
-            Two-dimensional acoustic velocity model.
+            Two-dimensional acoustic velocity model in m/s.
+        dx : float
+            Temporal increment.
+        dt : float
+            Temporal increment.
+        r_pos : ndarray
+            Array of two-dimensional receiver coordinates.
         **kwargs : additional keyword arguments
-            damping_factor : float
+            device : str, optional
+                Name of the CUDA device to utilise. Defaults to 'cuda:0' or
+                falls back to CPU if CUDA unavailable.
+            boundary_points : int, optional
+                Number of additional boundary points for absorbing boundaries.
+                Defaults to 45.
+            damping_factor : float, optional
                 Variable that controls the strength of damping applied in
                 absorbing boundary layer. Defaults to 0.0053.
-            alpha : ndarray
+            alpha : ndarray, optional
                 Attenuation coefficient model in Np/m derived as follows:
                 alpha = (pi*f)/(Q*vp),
                 where f is the frequency in Hz, Q is the dimensionsless quality
                 factor and vp is the acoustic velocity in m/s. Defaults to
                 None.
-            rho : ndarray
+            rho : ndarray, optional
                 Density model in kg/m^3. Defaults to None.
-
-        Returns
-        -------
-
-        """
-        damping_factor = kwargs.pop('damping_factor', 0.0053)
-        alpha = kwargs.pop('alpha', None)
-        rho = kwargs.pop('rho', None)
-        shape = model.shape
-
-        # Store model in slowness and allocate to device
-        self.m = 1/torch.from_numpy(
-            np.pad(model,
-                   self.bp,
-                   mode='edge')).float().to(self.device)
-
-        # Create damping array, pad with neg. exponential using optimal params
-        self.damp = torch.from_numpy(np.exp(-(damping_factor**2)*((np.pad(
-            np.zeros((shape[0], shape[1])),
-            self.bp,
-            mode='linear_ramp',
-            end_values=self.bp))**2))).float()
-
-        # Derive default attenuation model from damping array
-        self.q = (1/self.damp)-1
-
-        # Insert attenuation model if provided
-        if alpha is not None:
-            self.q[self.bp:-self.bp, self.bp:-self.bp] = \
-                (torch.from_numpy(alpha)*self.dt)*torch.from_numpy(model)
-        self.q = self.q.to(self.device)
-
-        if rho is not None:
-            # Store density model as buoyancy
-            self.b = 1/torch.from_numpy(
-                np.pad(rho,
-                       self.bp,
-                       mode='edge')).float().to(self.device)
-        else:
-            self.b = None
-
-        # Populate model gradient TODO: move this to .fit()?
-        self.m.grad = torch.zeros_like(self.m)
-
-        # Diagonal of the approximate Hessian TODO: move this to .fit()?
-        self.hess = torch.zeros_like(
-            torch.from_numpy(model)).float().to(self.device)
-
-    def _set_acquisitions(self, r_pos, **kwargs):
-        """
-        Define instance variables to handle acquisitions and geometry.
-
-        Parameters
-        ----------
-        r_pos : ndarray
-            Array of two-dimensional receiver coordinates.
-        **kwargs : additional keyword arguments
-            sampling_rte : int
+            sampling_rate : int, optional
                 Wavefield sampling rate. Defaults to 1.
+            pred_bc : float, optional
+                Predictive boundary coefficient. Defaults to 1.
+            ot4 : bool, optional
+                4th order accurate in time scheme. Defaults to True.
 
         Returns
         -------
 
         """
-        # Set receiver locations as indexes and add on boundary points
-        self.r_pos = torch.from_numpy(r_pos[:] + self.bp)
+        device = kwargs.pop('device', 'cuda:0')
+        self.device = torch.device(
+            device if torch.cuda.is_available() else 'cpu')
+        print(f'device = {self.device}')
 
-        # Set wavefield sampling rate
-        self.s_rate = int(kwargs.pop('sampling_rate', 1))
-
-        # Source kaiser windowed sinc function values
-        self.s_kaiser_sinc = 1
-        self.s_set = False  # Source set boolean
-        self.num_rec = self.r_pos.size(0)  # Number of receivers
-
-        # Check whether hicks interpolation is required
-        if type(self.r_pos[0, 0].item()) != int:
-            self.r_hicks = True  # Receiver hicks boolean
-
-            # Receiver hicks interpolation
-            self.r_pos, self.r_kaiser_sinc, self.r_pos_sizes = \
-                create_hicks_r_pos(self.r_pos, self.m)
-            self.r_kaiser_sinc = self.r_kaiser_sinc.to(self.device)
-        else:
-            self.r_hicks = False
-            self.r_kaiser_sinc = 1
-            self.r_pos_sizes = False
-
-        # Set instance variables to None before they have been set
-        self.s = None  # Source wavelet
-        self.u1 = None  # First wavefield for time-stepping
-        self.u2 = None  # Second wavefield for time-stepping
-        self.d = None  # Data recorded at receivers
-        self.wavefield = None  # Full partial derivative wavefield
-        self.s_pos = None  # Source indexes
-        self.num_srcs = None  # Number of sources
-        self.s_hicks = None  # Source hicks boolean
+        self._set_grid(dx, dt, **kwargs)
+        self._set_media(model, **kwargs)
+        self._set_acquisitions(r_pos, **kwargs)
+        self._set_operators(**kwargs)
 
     def configure(self, s_pos, source):
         """
         Initialise source locations, wavefields and data arrays.
+
+        Parameters
+        ----------
+        s_pos : ndarray
+            Array of two-dimensional source coordinates.
+        source : ndarray
+            One-dimensional array containing source wavelet pressure field.
+
+        Returns
+        -------
+
         """
-        
-        # set the source wavelet
+        # Set the source wavelet
         self.s = source.copy()
-        
-        # check if sources have not yet been set
-        if self.s_set==False:
-            
-            self.s_set = True # sources are now being set so this becomes true
-            self.num_srcs = s_pos.shape[0] # store the number of physical sources
-            
-            # if hicks interpolation is required, set s_hicks to true
-            if type(s_pos[0, 0]) != np.int64:
+
+        # Check if sources have not yet been set or if there is a different
+        # number of new and old source indices
+        if not self.s_set or len(s_pos) != self.num_srcs:
+            self.s_set = True
+            self.num_srcs = s_pos.shape[0]
+
+            # If hicks interpolation is required, set s_hicks to True
+            if type(s_pos[0, 0]) is not np.int64:
+                # Calculate source indices for hicks interpolation and
+                # corresponding kaiser windowed sinc function values
                 self.s_hicks = True
-                
-                # calculate source indexes for hicks interpolation and corresponding kaiser windowed sinc function values
-                self.s_pos, s_kaiser_sinc = create_hicks_s_pos(s_pos, self.m, self.bp)
-                self.s_kaiser_sinc = s_kaiser_sinc.to(self.device) # allocate memory to the GPU
-            
-            # if hicks interpolation is not required, set s_hicks to false
+                self.s_pos, s_kaiser_sinc = create_hicks_s_pos(s_pos,
+                                                               self.m,
+                                                               self.bp)
+                self.s_kaiser_sinc = s_kaiser_sinc.to(self.device)
+
+            # If hicks interpolation is not required, set s_hicks to False
             else:
+                # Set kaiser windowed sinc function values to 1 and create
+                # source indices
                 self.s_hicks = False
-                
-                # set kaiser windowed sinc function values to 1 and create source indexes 
                 self.s_kaiser_sinc = 1
                 self.s_pos = create_s_pos(s_pos, self.bp)
-            
-            # initialise wavefield and data arrays
-            self.u2 = torch.zeros(self.num_srcs, self.m.size(0), self.m.size(1)).float().to(self.device)
+
+            # Initialise wavefield and data arrays
+            self.u2 = torch.zeros(self.num_srcs,
+                                  self.m.size(0),
+                                  self.m.size(1)).float().to(self.device)
             self.u1 = torch.zeros_like(self.u2)
-            self.d = torch.zeros(self.num_srcs, self.r_pos.size(0), len(self.s)).float()
-            self.wavefield = torch.zeros(self.num_srcs, len(self.s[::self.s_rate]), self.m[self.bp:-self.bp, :].shape[0], self.m[:, self.bp:-self.bp].shape[1]).float().to(self.device)
-        
-        # check if there is the same number of new and old source indexes
-        elif len(s_pos)==self.num_srcs:
-            
-            # if hicks interpolation is required, set s_hicks to true
-            if type(s_pos[0, 0]) != np.int64:
-                self.s_hicks = True
-                
-                # calculate source indexes for hicks interpolation and corresponding kaiser windowed sinc function values
-                self.s_pos, s_kaiser_sinc = create_hicks_s_pos(s_pos, self.m, self.bp)
-                self.s_kaiser_sinc = s_kaiser_sinc.to(self.device) # allocate memory to the GPU
-            
-            # if hicks interpolation is not required, set s_hicks to false
-            else:
-                self.s_hicks = False
-                
-                # set kaiser windowed sinc function values to 1 and create source indexes 
-                self.s_kaiser_sinc = 1
-                self.s_v = create_s_pos(s_pos, self.bp)
-            
-            # reinitialise data array as d_hicks_to_d changes dimensionalality of 2nd dimension 
-            self.d = torch.zeros(self.num_srcs, self.r_pos.size(0), len(source)).float()
-        
-        # if there is a different number of new and old source indexes
+            self.d = torch.zeros(self.num_srcs,
+                                 self.r_pos.size(0),
+                                 len(self.s)).float()
+            self.wavefield = torch.zeros(
+                self.num_srcs,
+                len(self.s[::self.s_rate]),
+                self.m[self.bp:-self.bp, :].shape[0],
+                self.m[:, self.bp:-self.bp].shape[1]).float().to(self.device)
+
         else:
-            
-            self.num_srcs = s_pos.shape[0] # store the number of physical sources
-            
-            # if hicks interpolation is required, set s_hicks to true
-            if type(s_pos[0, 0]) != np.int64:
+            # If hicks interpolation is required, set s_hicks to True
+            if type(s_pos[0, 0]) is not np.int64:
+                # Calculate source indices for hicks interpolation and
+                # corresponding kaiser windowed sinc function values
                 self.s_hicks = True
-                
-                # calculate source indexes for hicks interpolation and corresponding kaiser windowed sinc function values
-                self.s_pos, s_kaiser_sinc = create_hicks_s_pos(s_pos, self.m, self.bp)
-                self.s_kaiser_sinc = s_kaiser_sinc.to(self.device) # allocate memory to the GPU
-            
-            # if hicks interpolation is not required, set s_hicks to false
+                self.s_pos, s_kaiser_sinc = create_hicks_s_pos(s_pos,
+                                                               self.m,
+                                                               self.bp)
+                self.s_kaiser_sinc = s_kaiser_sinc.to(self.device)
+
+            # If hicks interpolation is not required, set s_hicks to False
             else:
+                # Set kaiser windowed sinc function values to 1 and create
+                # source indices
                 self.s_hicks = False
-                
-                # set kaiser windowed sinc function values to 1 and create source indexes
                 self.s_kaiser_sinc = 1
                 self.s_pos = create_s_pos(s_pos, self.bp)
-            
-            # reinitialise wavefield and data arrays
-            self.u2 = torch.zeros(self.num_srcs, self.m.size(0), self.m.size(1)).float().to(self.device)
-            self.u1 = torch.zeros_like(self.u2)
-            self.d = torch.zeros(self.num_srcs, self.r_pos.size(0), len(self.s)).float()
-            self.wavefield = torch.zeros(self.num_srcs, len(self.s[::self.s_rate]), self.m[self.bp:-self.bp, :].shape[0], self.m[:, self.bp:-self.bp].shape[1]).float().to(self.device)
-    
-    
+
+            # Reinitialise data array as d_hicks_to_d changes dimensionalality
+            # of 2nd dimension
+            self.d = torch.zeros(self.num_srcs,
+                                 self.r_pos.size(0),
+                                 len(source)).float()
+
     def forward(self):
         """
         Solve the forward problem G(m) = d, storing the forward wavefield.
@@ -313,14 +171,14 @@ class WaveInversion:
                 self.u2[:, self.e:-self.e, self.e:-self.e] = ((self.dt_sq/(self.m[self.e:-self.e, self.e:-self.e]**2))*laplacian(self.u1, self.dx_sq, self.b)+(2-self.q[self.e:-self.e, self.e:-self.e]**2)*self.u1[:, self.e:-self.e, self.e:-self.e]-(1-self.q[self.e:-self.e, self.e:-self.e])*self.u2[:, self.e:-self.e, self.e:-self.e])/(1+self.q[self.e:-self.e, self.e:-self.e])
                 
                 # ot4 step
-                if self.OT4 == True:
+                if self.ot4:
                     self.u2[:, self.e2:-self.e2, self.e2:-self.e2] += (((self.dt**4)/(12*self.dx_sq*self.m[self.e2:-self.e2, self.e2:-self.e2]**4))*(laplacian(self.u1[:,2:,1:-1], self.dx_sq, None)+laplacian(self.u1[:,:-2,1:-1], self.dx_sq, None)+laplacian(self.u1[:,1:-1,2:], self.dx_sq, None)+laplacian(self.u1[:,1:-1,:-2], self.dx_sq, None)-4*laplacian(self.u1[:,1:-1,1:-1], self.dx_sq, None)))/(1+self.q[self.e2:-self.e2, self.e2:-self.e2])
 
                 # inject the source wavelet
                 self.u2[self.s_pos[:, 0], self.s_pos[:, 1], self.s_pos[:, 2]] += (((self.dt_sq*self.s[i])/((self.m[self.s_pos[:, 1], self.s_pos[:, 2]]**2)*self.dx_sq))/(1-self.q[self.s_pos[:, 1], self.s_pos[:, 2]]))*self.s_kaiser_sinc
                 
                 # apply predictive boundary conditions
-                self.pred(self.u2, self.u1, self.dt, self.dx, self.m, self.pred_bc)
+                self.pred(self.u2, self.u1, self.dt, self.dx, self.m)
                 
                 # calculate and store the partial derivative wavefield
                 if i%self.s_rate==0:
@@ -340,14 +198,14 @@ class WaveInversion:
                 self.u1[:, self.e:-self.e, self.e:-self.e] = ((self.dt_sq/(self.m[self.e:-self.e, self.e:-self.e]**2))*laplacian(self.u2, self.dx_sq, self.b)+(2-self.q[self.e:-self.e, self.e:-self.e]**2)*self.u2[:, self.e:-self.e, self.e:-self.e]-(1-self.q[self.e:-self.e, self.e:-self.e])*self.u1[:, self.e:-self.e, self.e:-self.e])/(1+self.q[self.e:-self.e, self.e:-self.e])
                 
                 # ot4 step
-                if self.OT4 == True:
+                if self.ot4:
                     self.u1[:, self.e2:-self.e2, self.e2:-self.e2] += (((self.dt**4)/(12*self.dx_sq*self.m[self.e2:-self.e2, self.e2:-self.e2]**4))*(laplacian(self.u2[:,2:,1:-1], self.dx_sq, None)+laplacian(self.u2[:,:-2,1:-1], self.dx_sq, None)+laplacian(self.u2[:,1:-1,2:], self.dx_sq, None)+laplacian(self.u2[:,1:-1,:-2], self.dx_sq, None)-4*laplacian(self.u2[:,1:-1,1:-1], self.dx_sq, None)))/(1+self.q[self.e2:-self.e2, self.e2:-self.e2])
                 
                 # inject the source wavelet
                 self.u1[self.s_pos[:, 0], self.s_pos[:, 1], self.s_pos[:, 2]] += (((self.dt_sq*self.s[i])/((self.m[self.s_pos[:, 1], self.s_pos[:, 2]]**2)*self.dx_sq))/(1-self.q[self.s_pos[:, 1], self.s_pos[:, 2]]))*self.s_kaiser_sinc
                 
                 # apply predictive boundary conditions
-                self.pred(self.u1, self.u2, self.dt, self.dx, self.m, self.pred_bc)
+                self.pred(self.u1, self.u2, self.dt, self.dx, self.m)
                 
                 # calculate and store the partial derivative wavefield
                 if i%self.s_rate==0:
@@ -384,14 +242,14 @@ class WaveInversion:
                 self.u2[:, self.e:-self.e, self.e:-self.e] = ((self.dt_sq/(self.m[self.e:-self.e, self.e:-self.e]**2))*laplacian(self.u1, self.dx_sq, self.b)+(2-self.q[self.e:-self.e, self.e:-self.e]**2)*self.u1[:, self.e:-self.e, self.e:-self.e]-(1-self.q[self.e:-self.e, self.e:-self.e])*self.u2[:, self.e:-self.e, self.e:-self.e])/(1+self.q[self.e:-self.e, self.e:-self.e])
                 
                 # ot4 step
-                if self.OT4 == True:
+                if self.ot4:
                     self.u2[:, self.e2:-self.e2, self.e2:-self.e2] += (((self.dt**4)/(12*self.dx_sq*self.m[self.e2:-self.e2, self.e2:-self.e2]**4))*(laplacian(self.u1[:,2:,1:-1], self.dx_sq, None)+laplacian(self.u1[:,:-2,1:-1], self.dx_sq, None)+laplacian(self.u1[:,1:-1,2:], self.dx_sq, None)+laplacian(self.u1[:,1:-1,:-2], self.dx_sq, None)-4*laplacian(self.u1[:,1:-1,1:-1], self.dx_sq, None)))/(1+self.q[self.e2:-self.e2, self.e2:-self.e2])
 
                 # inject the adjoint source at all receiver locations
                 self.u2[:, self.r_pos[:, 0], self.r_pos[:, 1]] += (((self.dt_sq*adjoint_source[:, :, i])/((self.m[self.r_pos[:, 0], self.r_pos[:, 1]]**2)*self.dx_sq))/(1-self.q[self.r_pos[:, 0], self.r_pos[:, 1]]))*self.r_kaiser_sinc
                 
                 # apply predictive boundary conditions
-                self.pred(self.u2, self.u1, self.dt, self.dx, self.m, self.pred_bc)
+                self.pred(self.u2, self.u1, self.dt, self.dx, self.m)
                 
                 # cumulatively calculate the gradient throughout backpropagation by cross-correlating forward and backward wavefields
                 if i%self.s_rate==0:
@@ -405,14 +263,14 @@ class WaveInversion:
                 self.u1[:, self.e:-self.e, self.e:-self.e] = ((self.dt_sq/(self.m[self.e:-self.e, self.e:-self.e]**2))*laplacian(self.u2, self.dx_sq, self.b)+(2-self.q[self.e:-self.e, self.e:-self.e]**2)*self.u2[:, self.e:-self.e, self.e:-self.e]-(1-self.q[self.e:-self.e, self.e:-self.e])*self.u1[:, self.e:-self.e, self.e:-self.e])/(1+self.q[self.e:-self.e, self.e:-self.e])
                 
                 # ot4 step
-                if self.OT4 == True:
+                if self.ot4:
                     self.u1[:, self.e2:-self.e2, self.e2:-self.e2] += (((self.dt**4)/(12*self.dx_sq*self.m[self.e2:-self.e2, self.e2:-self.e2]**4))*(laplacian(self.u2[:,2:,1:-1], self.dx_sq, None)+laplacian(self.u2[:,:-2,1:-1], self.dx_sq, None)+laplacian(self.u2[:,1:-1,2:], self.dx_sq, None)+laplacian(self.u2[:,1:-1,:-2], self.dx_sq, None)-4*laplacian(self.u2[:,1:-1,1:-1], self.dx_sq, None)))/(1+self.q[self.e2:-self.e2, self.e2:-self.e2])
                 
                 # inject the adjoint source at all receiver locations
                 self.u1[:, self.r_pos[:, 0], self.r_pos[:, 1]] += (((self.dt_sq*adjoint_source[:, :, i])/((self.m[self.r_pos[:, 0], self.r_pos[:, 1]]**2)*self.dx_sq))/(1-self.q[self.r_pos[:, 0], self.r_pos[:, 1]]))*self.r_kaiser_sinc
                 
                 # apply predictive boundary conditions
-                self.pred(self.u1, self.u2, self.dt, self.dx, self.m, self.pred_bc)
+                self.pred(self.u1, self.u2, self.dt, self.dx, self.m)
                 
                 # cumulatively calculate the gradient throughout backpropagation by cross-correlating forward and backward wavefields
                 if i%self.s_rate==0:
@@ -544,3 +402,191 @@ class WaveInversion:
                     self.rmse_history.append(rmse)
             
             print("______________________________________________________________________ \n")
+
+    def _set_grid(self, dx, dt, **kwargs):
+        """
+        Define instance variables to handle grid sampling and boundary cells.
+
+        Parameters
+        ----------
+        dx : float
+            Spatial increment.
+        dt : float
+            Temporal increment.
+        **kwargs : additional keyword arguments
+            boundary_points : int, optional
+                Number of additional boundary points for absorbing boundaries.
+                Defaults to 45.
+
+        Returns
+        -------
+
+        """
+        self.dx = float(dx)
+        self.dx_sq = float(dx**2)
+
+        self.dt = float(dt)
+        self.dt_sq = float(dt**2)
+
+        bp = kwargs.pop('boundary_points', 45)
+        assert bp > 10, 'There must be at least 10 boundary points.'
+        self.bp = int(bp)
+
+    def _set_media(self, model, **kwargs):
+        """
+        Define instance variables to handle various media required for FWI.
+
+        Parameters
+        ----------
+        model : ndarray
+            Two-dimensional acoustic velocity model in m/s.
+        **kwargs : additional keyword arguments
+            damping_factor : float, optional
+                Variable that controls the strength of damping applied in
+                absorbing boundary layer. Defaults to 0.0053.
+            alpha : ndarray, optional
+                Attenuation coefficient model in Np/m derived as follows:
+                alpha = (pi*f)/(Q*vp),
+                where f is the frequency in Hz, Q is the dimensionsless quality
+                factor and vp is the acoustic velocity in m/s. Defaults to
+                None.
+            rho : ndarray, optional
+                Density model in kg/m^3. Defaults to None.
+
+        Returns
+        -------
+
+        """
+        damping_factor = kwargs.pop('damping_factor', 0.0053)
+        alpha = kwargs.pop('alpha', None)
+        rho = kwargs.pop('rho', None)
+        shape = model.shape
+
+        # Store model in slowness and allocate to device
+        self.m = 1/torch.from_numpy(
+            np.pad(model,
+                   self.bp,
+                   mode='edge')).float().to(self.device)
+
+        # Create damping array, pad with neg. exponential using optimal params
+        self.damp = torch.from_numpy(np.exp(-(damping_factor**2)*((np.pad(
+            np.zeros((shape[0], shape[1])),
+            self.bp,
+            mode='linear_ramp',
+            end_values=self.bp))**2))).float()
+
+        # Derive default attenuation model from damping array
+        self.q = (1/self.damp)-1
+
+        # Insert attenuation model if provided
+        if alpha is not None:
+            self.q[self.bp:-self.bp, self.bp:-self.bp] = \
+                (torch.from_numpy(alpha)*self.dt)*torch.from_numpy(model)
+        self.q = self.q.to(self.device)
+
+        if rho is not None:
+            # Store density model as buoyancy
+            self.b = 1/torch.from_numpy(
+                np.pad(rho,
+                       self.bp,
+                       mode='edge')).float().to(self.device)
+        else:
+            self.b = None
+
+        # Initialise model gradient
+        self.m.grad = torch.zeros_like(self.m)
+
+        # Initialise diagonal of the approximate Hessian
+        self.hess = torch.zeros_like(
+            torch.from_numpy(model)).float().to(self.device)
+
+    def _set_acquisitions(self, r_pos, **kwargs):
+        """
+        Define instance variables to handle acquisitions and geometry.
+
+        Parameters
+        ----------
+        r_pos : ndarray
+            Array of two-dimensional receiver coordinates.
+        **kwargs : additional keyword arguments
+            sampling_rate : int, optional
+                Wavefield sampling rate. Defaults to 1.
+
+        Returns
+        -------
+
+        """
+        # Set receiver locations as indexes and add on boundary points
+        self.r_pos = torch.from_numpy(r_pos[:] + self.bp)
+
+        # Set wavefield sampling rate
+        self.s_rate = int(kwargs.pop('sampling_rate', 1))
+
+        # Source kaiser windowed sinc function values
+        self.s_kaiser_sinc = 1
+        self.s_set = False  # Source set boolean
+        self.num_rec = self.r_pos.size(0)  # Number of receivers
+
+        # Check whether hicks interpolation is required
+        if type(self.r_pos[0, 0].item()) != int:
+            self.r_hicks = True  # Receiver hicks boolean
+
+            # Receiver hicks interpolation
+            self.r_pos, self.r_kaiser_sinc, self.r_pos_sizes = \
+                create_hicks_r_pos(self.r_pos, self.m)
+            self.r_kaiser_sinc = self.r_kaiser_sinc.to(self.device)
+        else:
+            self.r_hicks = False
+            self.r_kaiser_sinc = 1
+            self.r_pos_sizes = False
+
+        # Set instance variables to None before they have been set
+        self.s = None  # Source wavelet
+        self.u1 = None  # First wavefield for time-stepping
+        self.u2 = None  # Second wavefield for time-stepping
+        self.d = None  # Data recorded at receivers
+        self.wavefield = None  # Full partial derivative wavefield
+        self.s_pos = None  # Source indexes
+        self.num_srcs = None  # Number of sources
+        self.s_hicks = None  # Source hicks boolean
+
+    def _set_operators(self, **kwargs):
+        """
+        Define instance variables to handle boundary and ot4 operators.
+
+        Parameters
+        ----------
+        **kwargs : additional keyword arguments
+            pred_bc : float, optional
+                Predictive boundary coefficient. Defaults to 1.
+            ot4 : bool, optional
+                4th order accurate in time scheme. Defaults to True.
+
+        Returns
+        -------
+
+        """
+        # Define strength of predictive boundaries
+        self.pred_bc = float(kwargs.pop('pred_bc', 1))
+
+        # Set 4th order accurate in time flag
+        self.ot4 = kwargs.pop('ot4', True)
+
+        if self.b is not None:
+            # Variable density Laplacian shrinks u by 9 cells in each dimension
+            self.e = 9
+            # Set the variable density predictive boundary function
+            self.pred = partial(predictive_boundary,
+                                pred_bc=self.pred_bc,
+                                rho=True)
+        else:
+            # Constant density Laplacian shrinks u by 5 cells in each dimension
+            self.e = 5
+            # Set the constant density predictive boundary function
+            self.pred = partial(predictive_boundary,
+                                pred_bc=self.pred_bc,
+                                rho=False)
+
+        if self.ot4:
+            # OT4 method shrinks u by 6 cells in each dimension
+            self.e2 = 6
