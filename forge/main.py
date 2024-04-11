@@ -4,7 +4,8 @@ from tqdm import tqdm
 from functools import partial
 from .laplacian import laplacian
 from .boundary import predictive_boundary
-from .geometry import create_hicks_r_pos, create_hicks_s_pos, create_s_pos
+from .geometry import create_hicks_r_pos, create_hicks_s_pos, create_s_pos, \
+    d_hicks_to_d
 from .utils import *
 
 
@@ -62,80 +63,179 @@ class WaveInversion:
         self._set_operators(**kwargs)
         self._set_problem(r_pos, **kwargs)
 
-    def forward(self):
+    def forward(self, s_pos, source):
         """
-        Solve the forward problem G(m) = d, storing the forward wavefield.
+        Solve the forward problem, G(m) = d, given a batch of source
+        geometry positions and a source wavelet. A down-sampled forward
+        wavefield is stored according to the sampling rate.
+
+        Parameters
+        ----------
+        s_pos : ndarray
+            Array of two-dimensional source coordinates.
+        source : ndarray
+            One-dimensional array containing source wavelet pressure field.
+
+        Returns
+        -------
+
         """
-        
-        # zero all wavefield and recorded data values
+        # Initialize source geometry positions, wavefields and data arrays
+        self._set_batch(s_pos, source)
+
+        # Zero all wavefield and recorded data values
         self.u2[:, :, :] = 0
         self.u1[:, :, :] = 0
         self.d[:, :, :] = 0
         self.wavefield[:, :, :, :] = 0
-        
-        # begin time-stepping 
-        for i in tqdm(range(len(self.s)), colour='blue', ncols=60, mininterval=0.03):
-            
-            # alternate wavefield updates between u1 and u2 to avoid storing a third wavefield
-            if i%2==0:
-                
-                # record current wavefield at receiver locations
-                self.d[:, :, i] = self.u1[:, self.r_pos[:, 0], self.r_pos[:, 1]]*self.r_kaiser_sinc
-                
-                # temporarily store u2 for calculating the partial derivative wavefield
-                if i%self.s_rate==0:
-                    self.wavefield[:, int(i/self.s_rate), :, :] = self.u2[:, self.bp:-self.bp, self.bp:-self.bp]
-                
-                # step forward in time and update the wavefield 
-                self.u2[:, self.e:-self.e, self.e:-self.e] = ((self.dt_sq/(self.m[self.e:-self.e, self.e:-self.e]**2))*laplacian(self.u1, self.dx_sq, self.b)+(2-self.q[self.e:-self.e, self.e:-self.e]**2)*self.u1[:, self.e:-self.e, self.e:-self.e]-(1-self.q[self.e:-self.e, self.e:-self.e])*self.u2[:, self.e:-self.e, self.e:-self.e])/(1+self.q[self.e:-self.e, self.e:-self.e])
-                
-                # ot4 step
-                if self.ot4:
-                    self.u2[:, self.e2:-self.e2, self.e2:-self.e2] += (((self.dt**4)/(12*self.dx_sq*self.m[self.e2:-self.e2, self.e2:-self.e2]**4))*(laplacian(self.u1[:,2:,1:-1], self.dx_sq, None)+laplacian(self.u1[:,:-2,1:-1], self.dx_sq, None)+laplacian(self.u1[:,1:-1,2:], self.dx_sq, None)+laplacian(self.u1[:,1:-1,:-2], self.dx_sq, None)-4*laplacian(self.u1[:,1:-1,1:-1], self.dx_sq, None)))/(1+self.q[self.e2:-self.e2, self.e2:-self.e2])
 
-                # inject the source wavelet
-                self.u2[self.s_pos[:, 0], self.s_pos[:, 1], self.s_pos[:, 2]] += (((self.dt_sq*self.s[i])/((self.m[self.s_pos[:, 1], self.s_pos[:, 2]]**2)*self.dx_sq))/(1-self.q[self.s_pos[:, 1], self.s_pos[:, 2]]))*self.s_kaiser_sinc
-                
-                # apply predictive boundary conditions
-                self.pred(self.u2, self.u1, self.dt, self.dx, self.m)
-                
-                # calculate and store the partial derivative wavefield
-                if i%self.s_rate==0:
-                    self.wavefield[:, int(i/self.s_rate), :, :] = (2*self.m[self.bp:-self.bp, self.bp:-self.bp])*((self.wavefield[:, int(i/self.s_rate), :, :]-(2*self.u1[:, self.bp:-self.bp, self.bp:-self.bp])+self.u2[:, self.bp:-self.bp, self.bp:-self.bp])/self.dt_sq)
-            
-            # alternate wavefield updates between u1 and u2 to avoid storing a third wavefield
-            else:
-                
-                # record current wavefield at receiver locations
-                self.d[:, :, i] = self.u2[:, self.r_pos[:, 0], self.r_pos[:, 1]]*self.r_kaiser_sinc
-                
-                # temporarily store u1 for calculating the partial derivative wavefield
-                if i%self.s_rate==0:
-                    self.wavefield[:, int(i/self.s_rate), :, :] = self.u1[:, self.bp:-self.bp, self.bp:-self.bp]
-                
-                # step forward in time and update the wavefield 
-                self.u1[:, self.e:-self.e, self.e:-self.e] = ((self.dt_sq/(self.m[self.e:-self.e, self.e:-self.e]**2))*laplacian(self.u2, self.dx_sq, self.b)+(2-self.q[self.e:-self.e, self.e:-self.e]**2)*self.u2[:, self.e:-self.e, self.e:-self.e]-(1-self.q[self.e:-self.e, self.e:-self.e])*self.u1[:, self.e:-self.e, self.e:-self.e])/(1+self.q[self.e:-self.e, self.e:-self.e])
-                
+        # Begin time-stepping
+        for t in tqdm(range(len(self.s)), colour='blue', ncols=60,
+                      mininterval=0.03):
+
+            # Alternate wavefield updates between u1 and u2 to avoid storing a
+            # third wavefield
+            if t % 2 == 0:
+
+                # Record current wavefield at receiver locations
+                self.d[:, :, t] = \
+                    self.u1[:, self.r_pos[:, 0], self.r_pos[:, 1]] * \
+                    self.r_kaiser_sinc
+
+                # Store u2 for calculating the partial derivative wavefield
+                if t % self.s_rate == 0:
+                    self.wavefield[:, int(t/self.s_rate), :, :] = \
+                        self.u2[:, self.bp:-self.bp, self.bp:-self.bp]
+
+                # Step forward in time and update the wavefield
+                self.u2[:, self.e:-self.e, self.e:-self.e] = \
+                    ((self.dt_sq /
+                      (self.m[self.e:-self.e, self.e:-self.e]**2)) *
+                        laplacian(self.u1, self.dx_sq, self.b) +
+                        (2-self.q[self.e:-self.e, self.e:-self.e]**2) *
+                        self.u1[:, self.e:-self.e, self.e:-self.e] -
+                        (1-self.q[self.e:-self.e, self.e:-self.e]) *
+                        self.u2[:, self.e:-self.e, self.e:-self.e]) /\
+                    (1+self.q[self.e:-self.e, self.e:-self.e])
+
                 # ot4 step
                 if self.ot4:
-                    self.u1[:, self.e2:-self.e2, self.e2:-self.e2] += (((self.dt**4)/(12*self.dx_sq*self.m[self.e2:-self.e2, self.e2:-self.e2]**4))*(laplacian(self.u2[:,2:,1:-1], self.dx_sq, None)+laplacian(self.u2[:,:-2,1:-1], self.dx_sq, None)+laplacian(self.u2[:,1:-1,2:], self.dx_sq, None)+laplacian(self.u2[:,1:-1,:-2], self.dx_sq, None)-4*laplacian(self.u2[:,1:-1,1:-1], self.dx_sq, None)))/(1+self.q[self.e2:-self.e2, self.e2:-self.e2])
-                
-                # inject the source wavelet
-                self.u1[self.s_pos[:, 0], self.s_pos[:, 1], self.s_pos[:, 2]] += (((self.dt_sq*self.s[i])/((self.m[self.s_pos[:, 1], self.s_pos[:, 2]]**2)*self.dx_sq))/(1-self.q[self.s_pos[:, 1], self.s_pos[:, 2]]))*self.s_kaiser_sinc
-                
-                # apply predictive boundary conditions
+                    self.u2[:, self.e2:-self.e2, self.e2:-self.e2] += \
+                        (((self.dt**4)/(12*self.dx_sq *
+                                        self.m[self.e2:-self.e2,
+                                               self.e2:-self.e2]**4)) *
+                            (laplacian(self.u1[:, 2:, 1:-1],
+                                       self.dx_sq,
+                                       None) +
+                             laplacian(self.u1[:, :-2, 1:-1],
+                                       self.dx_sq,
+                                       None) +
+                             laplacian(self.u1[:, 1:-1, 2:],
+                                       self.dx_sq,
+                                       None) +
+                             laplacian(self.u1[:, 1:-1, :-2],
+                                       self.dx_sq,
+                                       None) -
+                             4*laplacian(self.u1[:, 1:-1, 1:-1],
+                                         self.dx_sq,
+                                         None))) / \
+                        (1+self.q[self.e2:-self.e2, self.e2:-self.e2])
+
+                # Inject the source wavelet
+                self.u2[self.s_pos[:, 0], self.s_pos[:, 1], self.s_pos[:, 2]] \
+                    += (((self.dt_sq*self.s[t]) /
+                         ((self.m[self.s_pos[:, 1], self.s_pos[:, 2]]**2) *
+                          self.dx_sq)) /
+                        (1-self.q[self.s_pos[:, 1], self.s_pos[:, 2]])) * \
+                    self.s_kaiser_sinc
+
+                # Apply predictive boundary conditions
+                self.pred(self.u2, self.u1, self.dt, self.dx, self.m)
+
+                # Calculate and store the partial derivative wavefield
+                if t % self.s_rate == 0:
+                    self.wavefield[:, int(t/self.s_rate), :, :] = \
+                        (2*self.m[self.bp:-self.bp, self.bp:-self.bp]) * \
+                        ((self.wavefield[:, int(t/self.s_rate), :, :] -
+                          (2*self.u1[:, self.bp:-self.bp, self.bp:-self.bp]) +
+                          self.u2[:, self.bp:-self.bp, self.bp:-self.bp]) /
+                         self.dt_sq)
+
+            else:
+                # Record current wavefield at receiver locations
+                self.d[:, :, t] = \
+                    self.u2[:, self.r_pos[:, 0], self.r_pos[:, 1]] * \
+                    self.r_kaiser_sinc
+
+                # Store u1 for calculating the partial derivative wavefield
+                if t % self.s_rate == 0:
+                    self.wavefield[:, int(t/self.s_rate), :, :] = \
+                        self.u1[:, self.bp:-self.bp, self.bp:-self.bp]
+
+                # Step forward in time and update the wavefield
+                self.u1[:, self.e:-self.e, self.e:-self.e] = \
+                    ((self.dt_sq /
+                      (self.m[self.e:-self.e, self.e:-self.e]**2)) *
+                        laplacian(self.u2, self.dx_sq, self.b) +
+                        (2-self.q[self.e:-self.e, self.e:-self.e]**2) *
+                        self.u2[:, self.e:-self.e, self.e:-self.e] -
+                        (1-self.q[self.e:-self.e, self.e:-self.e]) *
+                        self.u1[:, self.e:-self.e, self.e:-self.e]) /\
+                    (1+self.q[self.e:-self.e, self.e:-self.e])
+
+                # ot4 step
+                if self.ot4:
+                    self.u1[:, self.e2:-self.e2, self.e2:-self.e2] += \
+                        (((self.dt**4)/(12*self.dx_sq *
+                                        self.m[self.e2:-self.e2,
+                                               self.e2:-self.e2]**4)) *
+                            (laplacian(self.u2[:, 2:, 1:-1],
+                                       self.dx_sq,
+                                       None) +
+                             laplacian(self.u2[:, :-2, 1:-1],
+                                       self.dx_sq,
+                                       None) +
+                             laplacian(self.u2[:, 1:-1, 2:],
+                                       self.dx_sq,
+                                       None) +
+                             laplacian(self.u2[:, 1:-1, :-2],
+                                       self.dx_sq,
+                                       None) -
+                             4*laplacian(self.u2[:, 1:-1, 1:-1],
+                                         self.dx_sq,
+                                         None))) / \
+                        (1+self.q[self.e2:-self.e2, self.e2:-self.e2])
+
+                # Inject the source wavelet
+                self.u1[self.s_pos[:, 0], self.s_pos[:, 1], self.s_pos[:, 2]] \
+                    += (((self.dt_sq*self.s[t]) /
+                         ((self.m[self.s_pos[:, 1], self.s_pos[:, 2]]**2) *
+                          self.dx_sq)) /
+                        (1-self.q[self.s_pos[:, 1], self.s_pos[:, 2]])) * \
+                    self.s_kaiser_sinc
+
+                # Apply predictive boundary conditions
                 self.pred(self.u1, self.u2, self.dt, self.dx, self.m)
-                
-                # calculate and store the partial derivative wavefield
-                if i%self.s_rate==0:
-                    self.wavefield[:, int(i/self.s_rate), :, :] = (2*self.m[self.bp:-self.bp, self.bp:-self.bp])*((self.wavefield[:, int(i/self.s_rate), :, :]-(2*self.u2[:, self.bp:-self.bp, self.bp:-self.bp])+self.u1[:, self.bp:-self.bp, self.bp:-self.bp])/self.dt_sq)
-        
-        # if hicks interpolation is used, transform the second dimension of d from self.r_pos.size(0) to self.num_rec
-        if self.r_hicks == True:
-            self.d = d_hicks_to_d(self.d, self.r_pos_sizes, self.num_rec, self.num_srcs, self.s)
-        
-        
-    def adjoint_gradient(self, adjoint_source):
+
+                # Calculate and store the partial derivative wavefield
+                if t % self.s_rate == 0:
+                    self.wavefield[:, int(t/self.s_rate), :, :] = \
+                        (2*self.m[self.bp:-self.bp, self.bp:-self.bp]) * \
+                        ((self.wavefield[:, int(t/self.s_rate), :, :] -
+                          (2*self.u2[:, self.bp:-self.bp, self.bp:-self.bp]) +
+                          self.u1[:, self.bp:-self.bp, self.bp:-self.bp]) /
+                         self.dt_sq)
+
+        # If hicks interpolation is used, transform the second dimension of d
+        # from self.r_pos.size(0) to self.num_rec
+        if self.r_hicks:
+            self.d = d_hicks_to_d(self.d,
+                                  self.r_pos_sizes,
+                                  self.num_rec,
+                                  self.num_srcs,
+                                  self.s)
+
+    def adjoint(self, adjoint_source):
         """
         Use the adjoint-state method to calculate the gradient.
         """
@@ -152,10 +252,10 @@ class WaveInversion:
         count = 1
         
         # begin time-stepping
-        for i in tqdm(range(adjoint_source.size(2)-1, -1, -1), colour='magenta', ncols=60, mininterval=0.03):
+        for t in tqdm(range(adjoint_source.size(2)-1, -1, -1), colour='magenta', ncols=60, mininterval=0.03):
             
             # alternate wavefield updates between u1 and u2 to avoid storing a third wavefield
-            if i%2==0:
+            if t%2==0:
                 
                 # step forward in time and update the wavefield 
                 self.u2[:, self.e:-self.e, self.e:-self.e] = ((self.dt_sq/(self.m[self.e:-self.e, self.e:-self.e]**2))*laplacian(self.u1, self.dx_sq, self.b)+(2-self.q[self.e:-self.e, self.e:-self.e]**2)*self.u1[:, self.e:-self.e, self.e:-self.e]-(1-self.q[self.e:-self.e, self.e:-self.e])*self.u2[:, self.e:-self.e, self.e:-self.e])/(1+self.q[self.e:-self.e, self.e:-self.e])
@@ -165,13 +265,13 @@ class WaveInversion:
                     self.u2[:, self.e2:-self.e2, self.e2:-self.e2] += (((self.dt**4)/(12*self.dx_sq*self.m[self.e2:-self.e2, self.e2:-self.e2]**4))*(laplacian(self.u1[:,2:,1:-1], self.dx_sq, None)+laplacian(self.u1[:,:-2,1:-1], self.dx_sq, None)+laplacian(self.u1[:,1:-1,2:], self.dx_sq, None)+laplacian(self.u1[:,1:-1,:-2], self.dx_sq, None)-4*laplacian(self.u1[:,1:-1,1:-1], self.dx_sq, None)))/(1+self.q[self.e2:-self.e2, self.e2:-self.e2])
 
                 # inject the adjoint source at all receiver locations
-                self.u2[:, self.r_pos[:, 0], self.r_pos[:, 1]] += (((self.dt_sq*adjoint_source[:, :, i])/((self.m[self.r_pos[:, 0], self.r_pos[:, 1]]**2)*self.dx_sq))/(1-self.q[self.r_pos[:, 0], self.r_pos[:, 1]]))*self.r_kaiser_sinc
+                self.u2[:, self.r_pos[:, 0], self.r_pos[:, 1]] += (((self.dt_sq*adjoint_source[:, :, t])/((self.m[self.r_pos[:, 0], self.r_pos[:, 1]]**2)*self.dx_sq))/(1-self.q[self.r_pos[:, 0], self.r_pos[:, 1]]))*self.r_kaiser_sinc
                 
                 # apply predictive boundary conditions
                 self.pred(self.u2, self.u1, self.dt, self.dx, self.m)
                 
                 # cumulatively calculate the gradient throughout backpropagation by cross-correlating forward and backward wavefields
-                if i%self.s_rate==0:
+                if t%self.s_rate==0:
                     self.m.grad[self.bp:-self.bp, self.bp:-self.bp] -= (self.u2[:, self.bp:-self.bp, self.bp:-self.bp]*self.wavefield[:, -count]).sum(0)
                     count += 1
                     
@@ -186,13 +286,13 @@ class WaveInversion:
                     self.u1[:, self.e2:-self.e2, self.e2:-self.e2] += (((self.dt**4)/(12*self.dx_sq*self.m[self.e2:-self.e2, self.e2:-self.e2]**4))*(laplacian(self.u2[:,2:,1:-1], self.dx_sq, None)+laplacian(self.u2[:,:-2,1:-1], self.dx_sq, None)+laplacian(self.u2[:,1:-1,2:], self.dx_sq, None)+laplacian(self.u2[:,1:-1,:-2], self.dx_sq, None)-4*laplacian(self.u2[:,1:-1,1:-1], self.dx_sq, None)))/(1+self.q[self.e2:-self.e2, self.e2:-self.e2])
                 
                 # inject the adjoint source at all receiver locations
-                self.u1[:, self.r_pos[:, 0], self.r_pos[:, 1]] += (((self.dt_sq*adjoint_source[:, :, i])/((self.m[self.r_pos[:, 0], self.r_pos[:, 1]]**2)*self.dx_sq))/(1-self.q[self.r_pos[:, 0], self.r_pos[:, 1]]))*self.r_kaiser_sinc
+                self.u1[:, self.r_pos[:, 0], self.r_pos[:, 1]] += (((self.dt_sq*adjoint_source[:, :, t])/((self.m[self.r_pos[:, 0], self.r_pos[:, 1]]**2)*self.dx_sq))/(1-self.q[self.r_pos[:, 0], self.r_pos[:, 1]]))*self.r_kaiser_sinc
                 
                 # apply predictive boundary conditions
                 self.pred(self.u1, self.u2, self.dt, self.dx, self.m)
                 
                 # cumulatively calculate the gradient throughout backpropagation by cross-correlating forward and backward wavefields
-                if i%self.s_rate==0:
+                if t%self.s_rate==0:
                     self.m.grad[self.bp:-self.bp, self.bp:-self.bp] -= (self.u1[:, self.bp:-self.bp, self.bp:-self.bp]*self.wavefield[:, -count]).sum(0)
                     count += 1
     
@@ -254,12 +354,9 @@ class WaveInversion:
 
                     if runs > 1:
                         print(f'    batch {k+1}/{runs}')
-
-                    # initialize corresponding source locations, wavefields and data arrays for modelling
-                    self.configure(s_pos[total_batch][k*bs:k*bs+bs], s)
                     
                     # solve the forward problem G(m) = d, storing the forward wavefield
-                    self.forward()
+                    self.forward(s_pos[total_batch][k*bs:k*bs+bs], s)
 
                     # turn on gradient tracking with respect to the predicted data
                     self.d.requires_grad_(requires_grad=True)
@@ -278,7 +375,7 @@ class WaveInversion:
                         i(self.d.grad)
                     
                     # backpropagate adjoint source through the model, generating a gradient
-                    self.adjoint_gradient(self.d.grad)
+                    self.adjoint(self.d.grad)
 
                     # clear the model.d.grad values for next iteration
                     self.d.grad = None
