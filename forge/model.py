@@ -656,7 +656,7 @@ class WaveInversion:
         if t % self.s_rate == 0:
             self.wavefield[:, int(t/self.s_rate), :, :] = \
                 b[:, self.bp:-self.bp, self.bp:-self.bp]
-    
+
     def _partial_derivative_wavefield(self, a, b, t):
         """
         Calculate and store the second partial derivative of the wavefield
