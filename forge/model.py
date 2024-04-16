@@ -5,7 +5,7 @@ from functools import partial
 from .laplacian import laplacian
 from .boundary import predictive_boundary
 from .geometry import create_hicks_r_pos, create_hicks_s_pos, create_s_pos, \
-    d_hicks_to_d
+    d_hicks_to_d, resid_hicks
 from .utils import *
 
 
@@ -115,51 +115,72 @@ class WaveInversion:
 
     def adjoint(self, adjoint_source):
         """
-        Use the adjoint-state method to calculate the gradient.
-        """
+        Applies the corresponding adjoint-state wave equation to calculate the
+        gradient of the model with respect to the loss function.
 
-        # allocate memory to the GPU and, if required, apply hicks interpolation
-        adjoint_source = resid_hicks(adjoint_source, self.num_srcs, self.num_rec,
-                            self.r_pos, self.r_pos_sizes, self.r_hicks).to(self.device)
-        
-        # zero all wavefield and gradient values
+        Parameters
+        ----------
+        adjoint_source : torch.Tensor
+            Three-dimensional tensor containing the adjoint source pressure
+            field to be injected for each receiver and for each shot.
+
+        Returns
+        -------
+
+        """
+        # Allocate to GPU and, if required, apply hicks interpolation
+        adjoint_source = resid_hicks(adjoint_source,
+                                     self.num_srcs,
+                                     self.num_rec,
+                                     self.r_pos,
+                                     self.r_pos_sizes,
+                                     self.r_hicks).to(self.device)
+
+        # Zero wavefield values
         self.u2[:, :, :] = 0
         self.u1[:, :, :] = 0
-        
-        # use counter to cross-correlate the partial derivative forward and backward wavefields at the correct time
-        count = 1
-        
-        # begin time-stepping
-        for t in tqdm(range(adjoint_source.size(2)-1, -1, -1), colour='magenta', ncols=60, mininterval=0.03):
-            
-            # alternate wavefield updates between u1 and u2 to avoid storing a third wavefield
+
+        # Use position to cross-correlate the partial derivative forward and
+        # backward wavefields at the correct time
+        position = 1
+
+        # Begin time-stepping
+        for t in tqdm(range(adjoint_source.size(2)-1, -1, -1),
+                      colour='magenta', ncols=60, mininterval=0.03):
+
+            # Alternate wavefield updates between u1 and u2 to avoid storing a
+            # third wavefield
             if t % 2 == 0:
-                
-                # Step backwards in time
+                # Step backwards in time (back-propagate residuals) then
+                # accumulate gradient via adjoint-state method
                 self._advance(self.u2, self.u1, t,
                               adjoint_source=adjoint_source)
-                
-                # cumulatively calculate the gradient throughout backpropagation by cross-correlating forward and backward wavefields
-                if t%self.s_rate==0:
-                    self.m.grad[self.bp:-self.bp, self.bp:-self.bp] -= (self.u2[:, self.bp:-self.bp, self.bp:-self.bp]*self.wavefield[:, -count]).sum(0)
-                    count += 1
-                    
-            # alternate wavefield updates between u1 and u2 to avoid storing a third wavefield   
+                self._accumulate_grad(self.u2, position)
+                position += 1
             else:
-                
-                # Step backwards in time
                 self._advance(self.u1, self.u2, t,
                               adjoint_source=adjoint_source)
-                
-                # cumulatively calculate the gradient throughout backpropagation by cross-correlating forward and backward wavefields
-                if t%self.s_rate==0:
-                    self.m.grad[self.bp:-self.bp, self.bp:-self.bp] -= (self.u1[:, self.bp:-self.bp, self.bp:-self.bp]*self.wavefield[:, -count]).sum(0)
-                    count += 1
-    
-    def m_out(self):
-        # extract the model in acoustic velocity
+                self._accumulate_grad(self.u1, position)
+                position += 1
+
+    def get_model(self):
+        """
+        Convert the current inner domain of the slowness model (self.m) to
+        acoustic velocity, detach from the computation graph, send it to
+        the CPU and return it.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        torch.Tensor (on CPU)
+            Current inner domain model (self.m), converted to acoustic
+            velocity (m/s).
+
+        """
         return 1/self.m[self.bp:-self.bp, self.bp:-self.bp].detach().cpu()
-    
+
     def fit(self, data, s_pos, source, optimizer, loss, num_iter, bs, runs=1, blocks=None, grad_norm=True, hess_prwh=1e-9, model_callbacks = [], adjoint_callbacks=[], box=None, true_model=None):
 
         # loss function tracking
@@ -271,7 +292,7 @@ class WaveInversion:
 
                 if true_model is not None:
                     # calculate, print and record a sample normalized model RMSE
-                    rmse = torch.sqrt(((self.m_out() - true_model)**2).mean()).item()/(true_model.shape[0]*true_model.shape[1])
+                    rmse = torch.sqrt(((self.get_model() - true_model)**2).mean()).item()/(true_model.shape[0]*true_model.shape[1])
                     print(f'    rmse = {rmse:.4g}')
                     self.rmse_history.append(rmse)
             
@@ -682,3 +703,27 @@ class WaveInversion:
                     (2*a[:, self.bp:-self.bp, self.bp:-self.bp]) +
                     b[:, self.bp:-self.bp, self.bp:-self.bp]) /
                     self.dt_sq)
+
+def _accumulate_grad(self, a, t, position):
+        """
+        Calculate the gradient contribution at a particular position via
+        the adjoint-state method by cross-correlating the forward and
+        back-propagated wavefields at a particular position.
+
+        Parameters
+        ----------
+        a : torch.Tensor
+            Current pressure wavefield.
+        t : int
+            Current position in time as an integer step.
+        position : int
+            Current position in (potentially) down-sampled wavefield.
+
+        Returns
+        -------
+
+        """
+        if t % self.s_rate == 0:
+            self.m.grad[self.bp:-self.bp, self.bp:-self.bp] -= \
+                (a[:, self.bp:-self.bp, self.bp:-self.bp] *
+                 self.wavefield[:, -position]).sum(0)
