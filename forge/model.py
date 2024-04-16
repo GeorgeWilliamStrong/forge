@@ -704,7 +704,7 @@ class WaveInversion:
                     b[:, self.bp:-self.bp, self.bp:-self.bp]) /
                     self.dt_sq)
 
-def _accumulate_grad(self, a, t, position):
+    def _accumulate_grad(self, a, t, position):
         """
         Calculate the gradient contribution at a particular position via
         the adjoint-state method by cross-correlating the forward and
@@ -726,4 +726,4 @@ def _accumulate_grad(self, a, t, position):
         if t % self.s_rate == 0:
             self.m.grad[self.bp:-self.bp, self.bp:-self.bp] -= \
                 (a[:, self.bp:-self.bp, self.bp:-self.bp] *
-                 self.wavefield[:, -position]).sum(0)
+                    self.wavefield[:, -position]).sum(0)
