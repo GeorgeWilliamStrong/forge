@@ -400,7 +400,6 @@ class WaveInversion:
             np.pad(model,
                    self.bp,
                    mode='edge')).float().to(self.device)
-        self.shape = self.m.shape
 
         # Create damping array, pad with neg. exponential using optimal params
         self.damp = torch.from_numpy(np.exp(-(damping_factor**2)*((np.pad(
@@ -508,7 +507,7 @@ class WaveInversion:
 
             # Receiver hicks interpolation
             self.r_pos, self.r_kaiser_sinc, self.r_pos_sizes = \
-                create_hicks_r_pos(self.r_pos, self.m)
+                create_hicks_r_pos(self.r_pos, self.m.shape)
             self.r_kaiser_sinc = self.r_kaiser_sinc.to(self.device)
         else:
             self.r_hicks = False
@@ -544,7 +543,7 @@ class WaveInversion:
             # corresponding kaiser windowed sinc function values
             self.s_hicks = True
             self.s_pos, s_kaiser_sinc = create_hicks_s_pos(s_pos,
-                                                           self.shape,
+                                                           self.m.shape,
                                                            self.bp)
             self.s_kaiser_sinc = s_kaiser_sinc.to(self.device)
 
