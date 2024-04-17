@@ -163,25 +163,63 @@ class WaveInversion:
                 self._accumulate_grad(self.u1, position)
                 position += 1
 
-    def get_model(self):
+    def fit(self, data, s_pos, source, optimizer, loss, num_iter, **kwargs):
         """
-        Convert the current inner domain of the slowness model (self.m) to
-        acoustic velocity, detach from the computation graph, send it to
-        the CPU and return it.
+        Implements the conventional full-waveform inversion (FWI)
+        optimistation loop.
 
         Parameters
         ----------
+        data : torch.Tensor
+            Three-dimensional acoustic data tensor.
+
+
+
+        dx : float
+            Temporal increment.
+        dt : float
+            Temporal increment.
+        r_pos : ndarray
+            Array of two-dimensional receiver coordinates.
+        **kwargs : additional keyword arguments
+            device : str, optional
+                Name of the CUDA device to utilise. Defaults to 'cuda:0' or
+                falls back to CPU if CUDA unavailable.
+            boundary_points : int, optional
+                Number of additional boundary points for absorbing boundaries.
+                Defaults to 45.
+            damping_factor : float, optional
+                Variable that controls the strength of damping applied in
+                absorbing boundary layer. Defaults to 0.0053.
+            alpha : ndarray, optional
+                Attenuation coefficient model in Np/m derived as follows:
+                alpha = (pi*f)/(Q*vp),
+                where f is the frequency in Hz, Q is the dimensionsless quality
+                factor and vp is the acoustic velocity in m/s. Defaults to
+                None.
+            rho : ndarray, optional
+                Density model in kg/m^3. Defaults to None.
+            sampling_rate : int, optional
+                Wavefield sampling rate. Defaults to 1.
+            pred_bc : float, optional
+                Predictive boundary coefficient. Defaults to 1.
+            ot4 : bool, optional
+                4th order accurate in time scheme. Defaults to True.
 
         Returns
         -------
-        torch.Tensor (on CPU)
-            Current inner domain model (self.m), converted to acoustic
-            velocity (m/s).
 
         """
-        return 1/self.m[self.bp:-self.bp, self.bp:-self.bp].detach().cpu()
 
-    def fit(self, data, s_pos, source, optimizer, loss, num_iter, bs, runs=1, blocks=None, grad_norm=True, hess_prwh=1e-9, model_callbacks = [], adjoint_callbacks=[], box=None, true_model=None):
+        bs = kwargs.pop('bs', s_pos//num_iter)  # Batch size (shots per run)
+        runs = kwargs.pop('runs', 1)  # Number of runs per iteration
+        blocks = kwargs.pop('blocks', None)  # Number of frequency blocks
+        grad_norm = kwargs.pop('grad_norm', True)  # Gradient normalisation
+        hess_prwh = kwargs.pop('hess_prwh', 1e-9)  # Inv. Hessian pre-whitening
+        box = kwargs.pop('box', None)
+        true_model = kwargs.pop('true_model', None)
+        model_callbacks = kwargs.pop('model_callbacks', [])
+        adjoint_callbacks = kwargs.pop('adjoint_callbacks', [])
 
         # loss function tracking
         self.loss_history = []
@@ -203,9 +241,9 @@ class WaveInversion:
             if blocks is not None:
                 print(f"block {i+1}/{num_blocks} | {blocks[i]:.4g}Hz")
                 s = butter_lowpass_filter(source.copy(), blocks[i], 1/self.dt, order=12)
-                data_filt = torch.from_numpy(butter_lowpass_filter(data, blocks[i], 1/self.dt, order=12)).float()
+                _data = torch.from_numpy(butter_lowpass_filter(data, blocks[i], 1/self.dt, order=12)).float()
             else:
-                data_filt = data
+                _data = data
                 s = source.copy()
             
             # begin optimization loop 
@@ -241,7 +279,7 @@ class WaveInversion:
                     self.d.requires_grad_(requires_grad=True)
 
                     # call the loss function
-                    f = loss(self.d, data_filt[total_batch][k*bs:k*bs+bs])
+                    f = loss(self.d, _data[total_batch][k*bs:k*bs+bs])
 
                     # use AD to calculate the adjoint source self.d.grad
                     f.backward()
@@ -362,6 +400,7 @@ class WaveInversion:
             np.pad(model,
                    self.bp,
                    mode='edge')).float().to(self.device)
+        self.shape = self.m.shape
 
         # Create damping array, pad with neg. exponential using optimal params
         self.damp = torch.from_numpy(np.exp(-(damping_factor**2)*((np.pad(
@@ -505,7 +544,7 @@ class WaveInversion:
             # corresponding kaiser windowed sinc function values
             self.s_hicks = True
             self.s_pos, s_kaiser_sinc = create_hicks_s_pos(s_pos,
-                                                           self.m,
+                                                           self.shape,
                                                            self.bp)
             self.s_kaiser_sinc = s_kaiser_sinc.to(self.device)
 
@@ -727,3 +766,21 @@ class WaveInversion:
             self.m.grad[self.bp:-self.bp, self.bp:-self.bp] -= \
                 (a[:, self.bp:-self.bp, self.bp:-self.bp] *
                     self.wavefield[:, -position]).sum(0)
+
+    def get_model(self):
+        """
+        Convert the current inner domain of the slowness model (self.m) to
+        acoustic velocity, detach from the computation graph, send it to
+        the CPU and return it.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        torch.Tensor (on CPU)
+            Current inner domain model (self.m), converted to acoustic
+            velocity (m/s).
+
+        """
+        return 1/self.m[self.bp:-self.bp, self.bp:-self.bp].detach().cpu()
