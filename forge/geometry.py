@@ -148,22 +148,81 @@ def create_hicks_r_pos(r_pos, shape, b=6.31, r=8):
         torch.tensor(np.array(new_r_pos_sizes))
 
 
-def d_hicks_to_d(d, r_pos_sizes, num_rec, num_srcs, s):
-    new_d = torch.zeros(num_srcs, num_rec, len(s)).float()
+def d_hicks_to_d(data, r_pos_sizes, num_srcs, num_true_rec, num):
+    """
+    Transform Hicks interpolated recorded values of data at receivers
+    from 'r_pos_sizes' to a single trace per receiver per shot.
+
+    Parameters
+    ----------
+    data : torch.Tensor
+        Three-dimensional Hicks interpolated acoustic data tensor.
+    r_pos_sizes : torch.Tensor
+        Tensor containing the number of elements in each of the Hicks
+        interpolated receivers.
+    num_srcs : int
+        Number of physical sources.
+    num_true_rec : int
+        Number of physical receivers.
+    num : int
+        Number of time samples.
+
+    Returns
+    -------
+    torch.Tensor
+        Three-dimensional acoustic data tensor.
+
+    """
+    output_data = torch.zeros(num_srcs, num_true_rec, num).float()
+
     count = 0
     for j in range(len(r_pos_sizes)):
-        new_d[:, j, :] = d[:, count:count+r_pos_sizes[j], :].sum(dim=1)
+        output_data[:, j, :] = \
+            data[:, count:count+r_pos_sizes[j], :].sum(dim=1)
         count += r_pos_sizes[j]
-    return new_d
+
+    return output_data
 
 
-def resid_hicks(resid, num_srcs, num_rec, r_pos, r_pos_sizes, r_hicks):
-    if r_hicks == True:
-        new_resid = torch.zeros(num_srcs, r_pos.shape[0], resid.shape[2])
-        count = 0
-        for i in range(num_rec):
-            new_resid[:,count:count+r_pos_sizes[i]] = resid[:,i].expand(r_pos_sizes[i], num_srcs, resid.shape[2]).transpose(0,1)
-            count += r_pos_sizes[i]
-        return new_resid
-    else:
-        return resid
+def adjoint_hicks(adjoint_source, r_pos_sizes, num_srcs, num_true_rec,
+                  num_rec, num):
+    """
+    Transform adjoint source defined at physical receiver locations to
+    Hicks interpolated adjoint source values.
+
+    Parameters
+    ----------
+    adjoint_source : torch.Tensor
+        Three-dimensional tensor containing the adjoint source pressure
+        field to be injected for each receiver and for each shot.
+    r_pos_sizes : torch.Tensor
+        Tensor containing the number of elements in each of the Hicks
+        interpolated receivers.
+    num_srcs : int
+        Number of physical sources.
+    num_true_rec : int
+        Number of physical receivers.
+    num_rec : int
+        Number of Hicks interpolation receivers.
+    num : int
+        Number of time samples.
+
+    Returns
+    -------
+    torch.Tensor
+        Three-dimensional tensor containing the adjoint source pressure
+        field to be injected for each Hicks interpolated receiver location
+        for each shot.
+
+    """
+    output_adjoint_source = torch.zeros(num_srcs, num_rec, num)
+
+    count = 0
+    for i in range(num_true_rec):
+        output_adjoint_source[:, count:count+r_pos_sizes[i]] = \
+            adjoint_source[:, i].expand(r_pos_sizes[i],
+                                        num_srcs,
+                                        num).transpose(0, 1)
+        count += r_pos_sizes[i]
+
+    return output_adjoint_source

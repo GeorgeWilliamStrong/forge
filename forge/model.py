@@ -5,7 +5,7 @@ from functools import partial
 from .laplacian import laplacian
 from .boundary import predictive_boundary
 from .geometry import create_hicks_r_pos, create_hicks_s_pos, create_s_pos, \
-    d_hicks_to_d, resid_hicks
+    d_hicks_to_d, adjoint_hicks
 from .utils import *
 
 
@@ -90,7 +90,7 @@ class WaveInversion:
         self.wavefield[:, :, :, :] = 0
 
         # Begin time-stepping
-        for t in tqdm(range(len(self.s)), colour='blue', ncols=60,
+        for t in tqdm(range(self.num), colour='blue', ncols=60,
                       mininterval=0.03):
 
             # Alternate wavefield updates between u1 and u2 to avoid storing a
@@ -105,13 +105,13 @@ class WaveInversion:
                 self._partial_derivative_wavefield(self.u2, self.u1, t)
 
         # If hicks interpolation is used, transform the second dimension of d
-        # from self.r_pos.size(0) to self.num_rec
+        # from self.num_rec to self.num_true_rec
         if self.r_hicks:
             self.d = d_hicks_to_d(self.d,
                                   self.r_pos_sizes,
-                                  self.num_rec,
                                   self.num_srcs,
-                                  self.s)
+                                  self.num_true_rec,
+                                  self.num)
 
     def adjoint(self, adjoint_source):
         """
@@ -128,13 +128,15 @@ class WaveInversion:
         -------
 
         """
-        # Allocate to GPU and, if required, apply hicks interpolation
-        adjoint_source = resid_hicks(adjoint_source,
-                                     self.num_srcs,
-                                     self.num_rec,
-                                     self.r_pos,
-                                     self.r_pos_sizes,
-                                     self.r_hicks).to(self.device)
+        # If required, apply hicks interpolation
+        if self.r_hicks:
+            adjoint_source = adjoint_hicks(adjoint_source,
+                                           self.r_pos_sizes,
+                                           self.num_srcs,
+                                           self.num_true_rec,
+                                           self.num_rec,
+                                           self.num)
+        adjoint_source = adjoint_source.to(self.device)
 
         # Zero wavefield values
         self.u2[:, :, :] = 0
@@ -499,7 +501,7 @@ class WaveInversion:
         # Source kaiser windowed sinc function values
         self.s_kaiser_sinc = 1
         self.s_set = False  # Source set boolean
-        self.num_rec = self.r_pos.size(0)  # Number of receivers
+        self.num_true_rec = len(r_pos)  # Number of physical receivers
 
         # Check whether hicks interpolation is required
         if type(self.r_pos[0, 0].item()) != int:
@@ -514,6 +516,10 @@ class WaveInversion:
             self.r_kaiser_sinc = 1
             self.r_pos_sizes = False
 
+        # Number of Hicks receiver positions or if no Hicks interpolation
+        # required, defaults to self.num_true_rec
+        self.num_rec = len(self.r_pos)
+
         # Set instance variables to None before they have been set
         self.s = None  # Source wavelet
         self.u1 = None  # First wavefield for time-stepping
@@ -523,6 +529,7 @@ class WaveInversion:
         self.s_pos = None  # Source indexes
         self.num_srcs = None  # Number of sources
         self.s_hicks = None  # Source hicks boolean
+        self.num = None  # Total number of time samples
 
     def _source_interp(self, s_pos):
         """
@@ -571,12 +578,13 @@ class WaveInversion:
 
         """
         self.s = source.copy()
+        self.num = len(source)
 
         # Check if sources have not yet been set or if there is a different
         # number of new and old source indices
         if not self.s_set or len(s_pos) != self.num_srcs:
             self.s_set = True
-            self.num_srcs = s_pos.shape[0]
+            self.num_srcs = len(s_pos)
 
             # Apply hicks interpolation if necessary
             self._source_interp(self, s_pos)
@@ -587,8 +595,8 @@ class WaveInversion:
                                   self.m.size(1)).float().to(self.device)
             self.u1 = torch.zeros_like(self.u2)
             self.d = torch.zeros(self.num_srcs,
-                                 self.r_pos.size(0),
-                                 len(self.s)).float()
+                                 self.num_rec,
+                                 self.num).float()
             self.wavefield = torch.zeros(
                 self.num_srcs,
                 len(self.s[::self.s_rate]),
@@ -602,8 +610,8 @@ class WaveInversion:
             # Reinitialise data array as d_hicks_to_d changes dimensionalality
             # of 2nd dimension
             self.d = torch.zeros(self.num_srcs,
-                                 self.r_pos.size(0),
-                                 len(source)).float()
+                                 self.num_rec,
+                                 self.num).float()
 
     def _advance(self, a, b, t, adjoint_source=None):
         """
