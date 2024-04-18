@@ -147,7 +147,7 @@ class WaveInversion:
         position = 1
 
         # Begin time-stepping
-        for t in tqdm(range(adjoint_source.size(2)-1, -1, -1),
+        for t in tqdm(range(self.num-1, -1, -1),
                       colour='magenta', ncols=60, mininterval=0.03):
 
             # Alternate wavefield updates between u1 and u2 to avoid storing a
