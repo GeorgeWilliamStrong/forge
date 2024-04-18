@@ -1,7 +1,8 @@
 import torch
 import numpy as np
-from tqdm import tqdm
 from functools import partial
+from tqdm import tqdm
+from datetime import datetime
 from .laplacian import laplacian
 from .boundary import predictive_boundary
 from .geometry import create_hicks_r_pos, create_hicks_s_pos, create_s_pos, \
@@ -90,8 +91,8 @@ class FullWaveformInversion:
         self.wavefield[:, :, :, :] = 0
 
         # Begin time-stepping
-        for t in tqdm(range(self.num), colour='blue', ncols=60,
-                      mininterval=0.03):
+        for t in tqdm(range(self.num), colour='blue', ncols=80,
+                      mininterval=0.03, desc='forward modelling'):
 
             # Alternate wavefield updates between u1 and u2 to avoid storing a
             # third wavefield
@@ -148,7 +149,8 @@ class FullWaveformInversion:
 
         # Begin time-stepping
         for t in tqdm(range(self.num-1, -1, -1),
-                      colour='magenta', ncols=60, mininterval=0.03):
+                      colour='magenta', ncols=80, mininterval=0.03,
+                      desc='adjoint modelling'):
 
             # Alternate wavefield updates between u1 and u2 to avoid storing a
             # third wavefield
@@ -174,106 +176,119 @@ class FullWaveformInversion:
         ----------
         data : torch.Tensor
             Three-dimensional acoustic data tensor.
-
-
-
-        dx : float
-            Temporal increment.
-        dt : float
-            Temporal increment.
-        r_pos : ndarray
-            Array of two-dimensional receiver coordinates.
+        s_pos : ndarray
+            Array of two-dimensional source coordinates.
+        source : ndarray
+            One-dimensional array containing source wavelet pressure field.
+        optimizer : torch.optim.Optimizer
+            Instance of a PyTorch optimizer with parameters set to 'self.m'.
+        loss : function
+            PyTorch loss function e.g. torch.nn.MSELoss(), or any function of
+            two arguments written in PyTorch that generates a scalar output.
+        num_iter : int
+            The number of iterations per frequency block.
         **kwargs : additional keyword arguments
-            device : str, optional
-                Name of the CUDA device to utilise. Defaults to 'cuda:0' or
-                falls back to CPU if CUDA unavailable.
-            boundary_points : int, optional
-                Number of additional boundary points for absorbing boundaries.
-                Defaults to 45.
-            damping_factor : float, optional
-                Variable that controls the strength of damping applied in
-                absorbing boundary layer. Defaults to 0.0053.
-            alpha : ndarray, optional
-                Attenuation coefficient model in Np/m derived as follows:
-                alpha = (pi*f)/(Q*vp),
-                where f is the frequency in Hz, Q is the dimensionsless quality
-                factor and vp is the acoustic velocity in m/s. Defaults to
-                None.
-            rho : ndarray, optional
-                Density model in kg/m^3. Defaults to None.
-            sampling_rate : int, optional
-                Wavefield sampling rate. Defaults to 1.
-            pred_bc : float, optional
-                Predictive boundary coefficient. Defaults to 1.
-            ot4 : bool, optional
-                4th order accurate in time scheme. Defaults to True.
+            bs : int, optional
+                Batch size represents the number of shots to model
+                simultaneously on the GPU or the shots per run. Defaults to
+                len(s_pos)//num_iter.
+            runs : int, optional
+                The number of forward-adjoint runs to perform per iteration.
+                This is useful when the number of shots you have is much
+                larger than the maximum batch size that can be fit in GPU
+                memory. Defaults to 1.
+            blocks : list of floats, optional
+                List of frequencies (in Hz) that define each block. Defaults
+                to None.
+            grad_norm : bool, optional
+                Whether to normalise the gradient so that the maximum absolute
+                value is 1. Defaults to True.
+            hess_prwh : float, optional
+                Scalar value used to pre-whiten the inverse of the diagonal of
+                the approximate Hessian. Defaults to 1e-9.
+            box : list-like, optional
+                Collection of two items representing the lower and upper box
+                constraints to be applied to the updated model parameters.
+                Defaults to None.
+            true_model : torch.Tensor, optional
+                True model to use to evaluate synthetic inversion performance.
+                If passed in, the model RMSE is recorded throughout the
+                optimistation. Defaults to None.
+            model_callbacks : list of functions, optional
+                List of callback functions to be applied to the model/gradient
+                at each iteration immediately prior to updating the model
+                parameters. Defaults to [].
+            adjoint_callbacks : list of functions, optional
+                List of callback functions to be applied to the adjoint source
+                at each iteration immediately prior to back-propagation.
+                Defaults to [].
 
         Returns
         -------
 
         """
-
-        bs = kwargs.pop('bs', s_pos//num_iter)  # Batch size (shots per run)
-        runs = kwargs.pop('runs', 1)  # Number of runs per iteration
-        blocks = kwargs.pop('blocks', None)  # Number of frequency blocks
-        grad_norm = kwargs.pop('grad_norm', True)  # Gradient normalisation
-        hess_prwh = kwargs.pop('hess_prwh', 1e-9)  # Inv. Hessian pre-whitening
+        bs = kwargs.pop('bs', len(s_pos)//num_iter)
+        runs = kwargs.pop('runs', 1)
+        blocks = kwargs.pop('blocks', None)
+        grad_norm = kwargs.pop('grad_norm', True)
+        hess_prwh = kwargs.pop('hess_prwh', 1e-9)
         box = kwargs.pop('box', None)
         true_model = kwargs.pop('true_model', None)
         model_callbacks = kwargs.pop('model_callbacks', [])
         adjoint_callbacks = kwargs.pop('adjoint_callbacks', [])
 
-        # loss function tracking
         self.loss_history = []
-
-        # model RMSE tracking
         if true_model is not None:
             self.rmse_history = []
-        
-        # are multiple blocks required?
+
         if blocks is not None:
             num_blocks = len(blocks)
         else:
             num_blocks = 1
-        
-        # loop over multiscale frequency blocks
+            _data = data
+            s = source.copy()
+
+        # Loop over multiscale frequency blocks
         for i in range(num_blocks):
-            
-            # low-pass the source and the data as required by the block frequency
+
+            # Low-pass filter the source and data as per block frequency
             if blocks is not None:
-                print(f"block {i+1}/{num_blocks} | {blocks[i]:.4g}Hz")
-                s = butter_lowpass_filter(source.copy(), blocks[i], 1/self.dt, order=12)
-                _data = torch.from_numpy(butter_lowpass_filter(data, blocks[i], 1/self.dt, order=12)).float()
-            else:
-                _data = data
-                s = source.copy()
-            
-            # begin optimization loop 
+                print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                      f" block {i+1}/{num_blocks}    {blocks[i]:.4g}Hz")
+                s = butter_lowpass_filter(source.copy(), blocks[i],
+                                          1/self.dt, order=12)
+                _data = torch.from_numpy(
+                    butter_lowpass_filter(data, blocks[i], 1/self.dt,
+                                          order=12)).float()
+
+            # Begin optimization loop
             for j in range(num_iter):
 
-                print(f'  iteration {j+1}/{num_iter}')
+                print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                      f'   iteration {j+1}/{num_iter}')
 
-                # zero the gradient
+                # Zero the gradient
                 self.m.grad[:, :] = 0
 
-                # zero the diagonal of the approximate Hessian
+                # Zero the diagonal of approximate Hessian
                 if hess_prwh:
                     self.hess[:, :] = 0
 
-                # empty the cache
+                # Empty the cache
                 torch.cuda.empty_cache()
 
-                # extract a random set of shots for this iteration
-                total_batch = np.random.choice(len(s_pos), bs*runs, replace=False)
+                # Extract a random set of shots for this iteration
+                total_batch = np.random.choice(len(s_pos), bs*runs,
+                                               replace=False)
 
                 f_n = 0
-
-                # loop over multiple forward runs per iteration
+                # Loop over runs per iteration
                 for k in range(runs):
 
                     if runs > 1:
-                        print(f'    batch {k+1}/{runs}')
-                    
+                        print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                              f'     batch {k+1}/{runs}')
+
                     # solve the forward problem G(m) = d, storing the forward wavefield
                     self.forward(s_pos[total_batch][k*bs:k*bs+bs], s)
 
@@ -327,13 +342,13 @@ class FullWaveformInversion:
                     
                 # calculate, print and record sample normalized loss value
                 f_n /= runs
-                print(f'    loss = {f_n:.4g}')
+                print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), f'     loss = {f_n:.4g}')
                 self.loss_history.append(f_n)
 
                 if true_model is not None:
                     # calculate, print and record a sample normalized model RMSE
                     rmse = torch.sqrt(((self.get_model() - true_model)**2).mean()).item()/(true_model.shape[0]*true_model.shape[1])
-                    print(f'    rmse = {rmse:.4g}')
+                    print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), f'     rmse = {rmse:.4g}')
                     self.rmse_history.append(rmse)
             
             print("______________________________________________________________________ \n")
