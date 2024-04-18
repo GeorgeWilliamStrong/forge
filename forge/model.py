@@ -157,12 +157,12 @@ class WaveInversion:
                 # accumulate gradient via adjoint-state method
                 self._advance(self.u2, self.u1, t,
                               adjoint_source=adjoint_source)
-                self._accumulate_grad(self.u2, position)
+                self._accumulate_grad(self.u2, t, position)
                 position += 1
             else:
                 self._advance(self.u1, self.u2, t,
                               adjoint_source=adjoint_source)
-                self._accumulate_grad(self.u1, position)
+                self._accumulate_grad(self.u1, t, position)
                 position += 1
 
     def fit(self, data, s_pos, source, optimizer, loss, num_iter, **kwargs):
@@ -587,7 +587,7 @@ class WaveInversion:
             self.num_srcs = len(s_pos)
 
             # Apply hicks interpolation if necessary
-            self._source_interp(self, s_pos)
+            self._source_interp(s_pos)
 
             # Initialise wavefield and data arrays
             self.u2 = torch.zeros(self.num_srcs,
@@ -605,7 +605,7 @@ class WaveInversion:
 
         else:
             # Apply hicks interpolation if necessary
-            self._source_interp(self, s_pos)
+            self._source_interp(s_pos)
 
             # Reinitialise data array as d_hicks_to_d changes dimensionalality
             # of 2nd dimension
