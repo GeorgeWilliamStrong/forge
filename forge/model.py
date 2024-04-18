@@ -9,7 +9,7 @@ from .geometry import create_hicks_r_pos, create_hicks_s_pos, create_s_pos, \
 from .utils import *
 
 
-class WaveInversion:
+class FullWaveformInversion:
     def __init__(self, model, dx, dt, r_pos, **kwargs):
         """
         Initialise instance variables and allocate memory.
