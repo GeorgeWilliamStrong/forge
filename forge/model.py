@@ -267,6 +267,7 @@ class FullWaveformInversion:
                 print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                       f'   iteration {j+1}/{num_iter}')
 
+                torch.cuda.empty_cache()
                 # Zero the gradient
                 self.m.grad[:, :] = 0
 
@@ -274,14 +275,11 @@ class FullWaveformInversion:
                 if hess_prwh:
                     self.hess[:, :] = 0
 
-                # Empty the cache
-                torch.cuda.empty_cache()
-
                 # Extract a random set of shots for this iteration
                 total_batch = np.random.choice(len(s_pos), bs*runs,
                                                replace=False)
 
-                f_n = 0
+                f = 0
                 # Loop over runs per iteration
                 for k in range(runs):
 
@@ -296,10 +294,10 @@ class FullWaveformInversion:
                     self.d.requires_grad_(requires_grad=True)
 
                     # call the loss function
-                    f = loss(self.d, _data[total_batch][k*bs:k*bs+bs])
+                    f_run = loss(self.d, _data[total_batch][k*bs:k*bs+bs])
 
                     # use AD to calculate the adjoint source self.d.grad
-                    f.backward()
+                    f_run.backward()
 
                     # turn off gradient tracking with respect to the predicted data
                     self.d.requires_grad_(requires_grad=False)
@@ -319,7 +317,7 @@ class FullWaveformInversion:
                         self.hess += (self.wavefield**2).sum(1).sum(0)
 
                     # increment the sample normalized loss value
-                    f_n += f.item()/(self.d.size(0)*self.d.size(1)*self.d.size(2))
+                    f += f_run.item()/(self.d.size(0)*self.d.size(1)*self.d.size(2))
                 
                 # precondition the gradient with the diagonal of the approximate Hessian
                 if hess_prwh:
@@ -341,9 +339,9 @@ class FullWaveformInversion:
                     self.m.data = torch.clamp(self.m, 1/box[1], 1/box[0])
                     
                 # calculate, print and record sample normalized loss value
-                f_n /= runs
-                print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), f'     loss = {f_n:.4g}')
-                self.loss_history.append(f_n)
+                f /= runs
+                print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), f'     loss = {f:.4g}')
+                self.loss_history.append(f)
 
                 if true_model is not None:
                     # calculate, print and record a sample normalized model RMSE
