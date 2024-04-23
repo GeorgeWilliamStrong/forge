@@ -1,13 +1,15 @@
 import torch
 import numpy as np
 from functools import partial
-from tqdm import tqdm
-from datetime import datetime
+
 from .laplacian import laplacian
 from .boundary import predictive_boundary
 from .geometry import create_hicks_r_pos, create_hicks_s_pos, create_s_pos, \
     d_hicks_to_d, adjoint_hicks
-from .utils import *
+from .filters import butter_lowpass_filter
+
+from tqdm import tqdm
+from datetime import datetime
 
 
 class FullWaveformInversion:
@@ -287,69 +289,61 @@ class FullWaveformInversion:
                         print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                               f'     batch {k+1}/{runs}')
 
-                    # solve the forward problem G(m) = d, storing the forward wavefield
                     self.forward(s_pos[total_batch][k*bs:k*bs+bs], s)
 
-                    # turn on gradient tracking with respect to the predicted data
+                    # Track gradient w.r.t modelled data
                     self.d.requires_grad_(requires_grad=True)
-
-                    # call the loss function
                     f_run = loss(self.d, _data[total_batch][k*bs:k*bs+bs])
 
-                    # use AD to calculate the adjoint source self.d.grad
+                    # Calculate adjoint source in self.d.grad
                     f_run.backward()
-
-                    # turn off gradient tracking with respect to the predicted data
                     self.d.requires_grad_(requires_grad=False)
-                    
-                    # adjoint source callbacks e.g. for low-pass filtering
+
                     for i in adjoint_callbacks:
                         i(self.d.grad)
-                    
-                    # backpropagate adjoint source through the model, generating a gradient
+
                     self.adjoint(self.d.grad)
 
-                    # clear the model.d.grad values for next iteration
+                    # Clear the self.d.grad values for next iteration
                     self.d.grad = None
 
-                    # increment the diagonal of the approximate Hessian
+                    # Accumulate into diagonal of approximate Hessian
                     if hess_prwh:
                         self.hess += (self.wavefield**2).sum(1).sum(0)
 
-                    # increment the sample normalized loss value
-                    f += f_run.item()/(self.d.size(0)*self.d.size(1)*self.d.size(2))
-                
-                # precondition the gradient with the diagonal of the approximate Hessian
+                    # Increment the sample normalized loss value
+                    f += f_run.item()/self.d.numel()
+
+                # Precondition with the diagonal of approximate Hessian
                 if hess_prwh:
-                    self.m.grad[self.bp:-self.bp, self.bp:-self.bp] /= (self.hess + hess_prwh*torch.norm(self.hess))
-                
-                # normalize the gradient so the maximum absolute value is 1
+                    self.m.grad[self.bp:-self.bp, self.bp:-self.bp] /= \
+                        (self.hess + hess_prwh*torch.norm(self.hess))
+
+                # Normalize the gradient so the maximum absolute value is 1
                 if grad_norm:
                     self.m.grad /= abs(self.m.grad).max()
-                
-                # model/gradient callbacks e.g. for smoothing or regularisation terms
+
                 for i in model_callbacks:
                     i(self.m)
-                
-                # take optimization step 
+
                 optimizer.step()
-                
-                # box constraints
+
                 if box:
                     self.m.data = torch.clamp(self.m, 1/box[1], 1/box[0])
-                    
-                # calculate, print and record sample normalized loss value
+
                 f /= runs
-                print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), f'     loss = {f:.4g}')
+                print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                      f'     loss = {f:.4g}')
                 self.loss_history.append(f)
 
                 if true_model is not None:
-                    # calculate, print and record a sample normalized model RMSE
-                    rmse = torch.sqrt(((self.get_model() - true_model)**2).mean()).item()/(true_model.shape[0]*true_model.shape[1])
-                    print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), f'     rmse = {rmse:.4g}')
+                    rmse = torch.sqrt(
+                        ((self.get_model() - true_model)**2).mean()).item() / \
+                            (true_model.shape[0]*true_model.shape[1])
+                    print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                          f'     rmse = {rmse:.4g}')
                     self.rmse_history.append(rmse)
-            
-            print("______________________________________________________________________ \n")
+            print("_______________________________________________________ \n")
 
     def _set_grid(self, dx, dt, **kwargs):
         """
