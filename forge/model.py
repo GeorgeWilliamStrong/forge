@@ -733,8 +733,8 @@ class FullWaveformInversion:
 
     def _partial_derivative_wavefield(self, a, b, t):
         """
-        Calculate and store the second partial derivative of the wavefield
-        with respect to time.
+        Calculate and store the scaled second partial derivative of the
+        wavefield with respect to time.
 
         Parameters
         ----------
