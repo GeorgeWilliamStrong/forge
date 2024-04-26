@@ -161,13 +161,11 @@ class FullWaveformInversion:
                 # accumulate gradient via adjoint-state method
                 self._advance(self.u2, self.u1, t,
                               adjoint_source=adjoint_source)
-                self._accumulate_grad(self.u2, t, position)
-                position += 1
+                position = self._accumulate_grad(self.u2, t, position)
             else:
                 self._advance(self.u1, self.u2, t,
                               adjoint_source=adjoint_source)
-                self._accumulate_grad(self.u1, t, position)
-                position += 1
+                position = self._accumulate_grad(self.u1, t, position)
 
     def fit(self, data, s_pos, source, optimizer, loss, num_iter, **kwargs):
         """
@@ -774,12 +772,17 @@ class FullWaveformInversion:
 
         Returns
         -------
+        int
+            Updated position.
 
         """
         if t % self.s_rate == 0:
             self.m.grad[self.bp:-self.bp, self.bp:-self.bp] -= \
                 (a[:, self.bp:-self.bp, self.bp:-self.bp] *
                     self.wavefield[:, -position]).sum(0)
+            position += 1
+
+        return position
 
     def get_model(self):
         """
