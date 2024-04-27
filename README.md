@@ -2,7 +2,7 @@
 
 A full-waveform inversion (FWI) framework built in [PyTorch](https://pytorch.org/). Forge was designed and built for research and prototyping of tomographic acoustic imaging methods.
 
-Everything has been built from the ground up in pure PyTorch, with no third-party libraries relied upon for wave propagation or inversion. This gives the user complete control and customisability.
+Everything has been built from the ground up using pure PyTorch, with no third-party libraries relied upon for wave propagation or inversion. This gives the user complete control and customisability.
 
 **Forge was built to:**
 1. accelerate FWI research,
@@ -15,17 +15,18 @@ Everything has been built from the ground up in pure PyTorch, with no third-part
 2. be *entirely* hackable,
 3. built on PyTorch.
 
-If three-dimensional modelling and/or production grade performance are required, [stride](https://www.stride.codes/) is recommended.
+If three-dimensional modelling and/or production grade performance are required, [stride](https://www.stride.codes/) and [devito](https://www.devitoproject.org/) are recommended.
 
 ## Quickstart
 
+Install Forge and its required dependencies as follows:
 ```sh
 git clone https://github.com/GeorgeWilliamStrong/forge.git
 cd forge
 pip install -e .
 ```
 
-Plotting functionality used in the demos employs PySlice, which can be installed as follows:
+Plotting functionality used in the demos employs [PySlice](https://github.com/GeorgeWilliamStrong/pyslice), which can be installed as follows:
 
 ```sh
 conda activate forge
@@ -34,11 +35,19 @@ cd pyslice
 pip install -e .
 ```
 
-Then run through the [demo](https://github.com/GeorgeWilliamStrong/forge/blob/main/examples/forge-demo.ipynb).
+## Usage
 
-## Theory
+Please run throught the FWI demo notebook located [here](https://github.com/GeorgeWilliamStrong/forge/blob/main/examples/forge-demo.ipynb), or via Google colab <a target="_blank" href="https://colab.research.google.com/github/GeorgeWilliamStrong/forge/blob/dev-refactor/examples/forge-demo.ipynb">
+  <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
+</a>
 
+Then run through the breast imaging FWI example [here](https://github.com/GeorgeWilliamStrong/forge/tree/main/examples/breast2D), which can also be launched via Google colab
+1. Forward problem <a target="_blank" href="https://colab.research.google.com/github/GeorgeWilliamStrong/forge/blob/main/examples/breast2D/forward.ipynb">
+  <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
+</a>
+2. Inverse problem <a target="_blank" href="https://colab.research.google.com/github/GeorgeWilliamStrong/forge/blob/main/examples/breast2D/inverse.ipynb">
+  <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
+</a>
 
-
-### What Forge isn't for
+## What Forge isn't for
 Currently, Forge only supports two-dimensional modelling as it was designed for experimental prototyping. Extending the codes to three-dimensional modelling is trivial in principle, although multi-GPU support has not yet been implemented.
