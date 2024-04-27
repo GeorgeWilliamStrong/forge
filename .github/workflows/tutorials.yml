@@ -13,6 +13,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    - name: Checkout pyslice
+      uses: actions/checkout@v3
+      with:
+        repository: georgewilliamstrong/pyslice
+        path: pyslice
+
     - name: Checkout forge
       uses: actions/checkout@v3
       with:
@@ -27,6 +33,12 @@ jobs:
       shell: bash -l {0}
       run: |
         cd forge
+        pip install -e .
+
+    - name: Install pyslice
+      shell: bash -l {0}
+      run: |
+        cd pyslice
         pip install -e .
 
     - name: Run demo notebook
