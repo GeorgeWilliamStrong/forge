@@ -37,7 +37,7 @@ pip install -e .
 
 ## Usage
 
-Please run throught the FWI demo notebook located [here](https://github.com/GeorgeWilliamStrong/forge/blob/main/examples/forge-demo.ipynb), or via Google colab <a target="_blank" href="https://colab.research.google.com/github/GeorgeWilliamStrong/forge/blob/dev-refactor/examples/forge-demo.ipynb">
+Please run throught the FWI [demo notebook](https://github.com/GeorgeWilliamStrong/forge/blob/main/examples/forge-demo.ipynb), which can be launched via Google colab <a target="_blank" href="https://colab.research.google.com/github/GeorgeWilliamStrong/forge/blob/dev-refactor/examples/forge-demo.ipynb">
   <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
 </a>
 
