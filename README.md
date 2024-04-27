@@ -31,7 +31,6 @@ pip install -e .
 Plotting functionality used in the demos employs [PySlice](https://github.com/GeorgeWilliamStrong/pyslice), which can be installed as follows:
 
 ```sh
-conda activate forge
 git clone https://github.com/GeorgeWilliamStrong/pyslice
 cd pyslice
 pip install -e .
@@ -39,21 +38,15 @@ pip install -e .
 
 ## Usage
 
-Please run throught the FWI [demo notebook](https://github.com/GeorgeWilliamStrong/forge/blob/main/tutorials/forge-demo.ipynb), which can be launched via Google colab 
-
-<a target="_blank" href="https://colab.research.google.com/github/GeorgeWilliamStrong/forge/blob/main/tutorials/forge-demo.ipynb">
+Please run throught the FWI [demo](https://github.com/GeorgeWilliamStrong/forge/blob/main/tutorials/forge-demo.ipynb) <a target="_blank" href="https://colab.research.google.com/github/GeorgeWilliamStrong/forge/blob/main/tutorials/forge-demo.ipynb">
   <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
-</a><br/><br/>
+</a>.
 
-Then run through the breast imaging FWI example [here](https://github.com/GeorgeWilliamStrong/forge/tree/main/examples/breast2D), which can also be launched via Google colab
-
-1. Forward problem <a target="_blank" href="https://colab.research.google.com/github/GeorgeWilliamStrong/forge/blob/main/examples/breast2D/forward.ipynb">
+Then run through the breast imaging FWI [example](https://github.com/GeorgeWilliamStrong/forge/tree/main/examples/breast2D) (forward <a target="_blank" href="https://colab.research.google.com/github/GeorgeWilliamStrong/forge/blob/main/examples/breast2D/forward.ipynb">
   <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
-</a>
-
-2. Inverse problem <a target="_blank" href="https://colab.research.google.com/github/GeorgeWilliamStrong/forge/blob/main/examples/breast2D/inverse.ipynb">
+</a></a>, inverse <a target="_blank" href="https://colab.research.google.com/github/GeorgeWilliamStrong/forge/blob/main/examples/breast2D/inverse.ipynb">
   <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
-</a>
+</a></a>).
 
-## What Forge isn't for
+***
 Currently, Forge only supports two-dimensional modelling as it was designed for rapid experimental prototyping. Extending the codes to three-dimensional modelling is trivial in principle, although multi-GPU support has not yet been implemented.
