@@ -38,11 +38,11 @@ pip install -e .
 
 ## Usage
 
-Please run throught the FWI [demo](https://github.com/GeorgeWilliamStrong/forge/blob/main/tutorials/forge-demo.ipynb) <a target="_blank" href="https://colab.research.google.com/github/GeorgeWilliamStrong/forge/blob/main/tutorials/forge-demo.ipynb">
+Please refer to the FWI [demo](https://github.com/GeorgeWilliamStrong/forge/blob/main/tutorials/forge-demo.ipynb) <a target="_blank" href="https://colab.research.google.com/github/GeorgeWilliamStrong/forge/blob/main/tutorials/forge-demo.ipynb">
   <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
 </a>.
 
-Then run through the breast imaging FWI [example](https://github.com/GeorgeWilliamStrong/forge/tree/main/examples/breast2D) (forward <a target="_blank" href="https://colab.research.google.com/github/GeorgeWilliamStrong/forge/blob/main/examples/breast2D/forward.ipynb">
+Please also see the breast imaging FWI [example](https://github.com/GeorgeWilliamStrong/forge/tree/main/examples/breast2D) (forward <a target="_blank" href="https://colab.research.google.com/github/GeorgeWilliamStrong/forge/blob/main/examples/breast2D/forward.ipynb">
   <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
 </a></a>, inverse <a target="_blank" href="https://colab.research.google.com/github/GeorgeWilliamStrong/forge/blob/main/examples/breast2D/inverse.ipynb">
   <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
