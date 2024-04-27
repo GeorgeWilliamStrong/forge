@@ -2,7 +2,7 @@ import torch
 import numpy as np
 
 
-def create_s_pos(new_s_pos, bp): 
+def create_s_pos(new_s_pos, bp):
     """
     Generate new source positions, corrected for boundary points.
 
@@ -24,7 +24,7 @@ def create_s_pos(new_s_pos, bp):
 
     for i in range(new_s_pos.shape[0]):
         s_pos[i, 0] = i
-        s_pos[i, 1] = new_s_pos[i, 0]+bp 
+        s_pos[i, 1] = new_s_pos[i, 0]+bp
         s_pos[i, 2] = new_s_pos[i, 1]+bp
 
     return torch.from_numpy(s_pos)
