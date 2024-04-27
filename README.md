@@ -56,4 +56,4 @@ Then run through the breast imaging FWI example [here](https://github.com/George
 </a>
 
 ## What Forge isn't for
-Currently, Forge only supports two-dimensional modelling as it was designed for experimental prototyping. Extending the codes to three-dimensional modelling is trivial in principle, although multi-GPU support has not yet been implemented.
+Currently, Forge only supports two-dimensional modelling as it was designed for rapid experimental prototyping. Extending the codes to three-dimensional modelling is trivial in principle, although multi-GPU support has not yet been implemented.
