@@ -42,9 +42,11 @@ Please run throught the FWI demo notebook located [here](https://github.com/Geor
 </a>
 
 Then run through the breast imaging FWI example [here](https://github.com/GeorgeWilliamStrong/forge/tree/main/examples/breast2D), which can also be launched via Google colab
+
 1. Forward problem <a target="_blank" href="https://colab.research.google.com/github/GeorgeWilliamStrong/forge/blob/main/examples/breast2D/forward.ipynb">
   <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
 </a>
+
 2. Inverse problem <a target="_blank" href="https://colab.research.google.com/github/GeorgeWilliamStrong/forge/blob/main/examples/breast2D/inverse.ipynb">
   <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
 </a>
