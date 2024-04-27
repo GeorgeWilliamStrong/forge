@@ -32,5 +32,5 @@ jobs:
     - name: Run demo notebook
       shell: bash -l {0}
       run: |
-        cd forge/examples/
+        cd forge/tutorials/
         py.test -p no:python --nbval-lax
