@@ -36,17 +36,46 @@ cd pyslice
 pip install -e .
 ```
 
-## Usage
+### Examples
 
 Please refer to the FWI [demo](https://github.com/GeorgeWilliamStrong/forge/blob/main/tutorials/forge-demo.ipynb) <a target="_blank" href="https://colab.research.google.com/github/GeorgeWilliamStrong/forge/blob/main/tutorials/forge-demo.ipynb">
   <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
-</a>.
+</a> for a detailed overview of how to use Forge.
 
-Please also see the breast imaging FWI [example](https://github.com/GeorgeWilliamStrong/forge/tree/main/examples/breast2D) (forward <a target="_blank" href="https://colab.research.google.com/github/GeorgeWilliamStrong/forge/blob/main/examples/breast2D/forward.ipynb">
+There is also a breast imaging FWI example located [here](https://github.com/GeorgeWilliamStrong/forge/tree/main/examples/breast2D) (forward <a target="_blank" href="https://colab.research.google.com/github/GeorgeWilliamStrong/forge/blob/main/examples/breast2D/forward.ipynb">
   <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
 </a></a>, inverse <a target="_blank" href="https://colab.research.google.com/github/GeorgeWilliamStrong/forge/blob/main/examples/breast2D/inverse.ipynb">
   <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
 </a></a>).
+
+### Usage
+
+```python
+from forge.model import FullWaveformInversion
+import torch
+
+# Instantiate model using the starting model
+model = FullWaveformInversion(model = m0,
+                              dx = dx,
+                              dt = dt,
+                              r_pos = r_pos)
+
+# Instantiate PyTorch optimizer
+opt = torch.optim.SGD([model.m], lr=1e-5, momentum=0.4)
+
+# Define loss function
+l2_loss = torch.nn.MSELoss()
+
+# Run the optimisation loop
+model.fit(data = true_model.d,
+          s_pos = s_pos,
+          source = source,
+          optimizer = opt,
+          loss = l2_loss,
+          num_iter = 10,
+          bs = 10,
+          blocks = [1e5, 2e5])
+```
 
 ***
 Currently, Forge only supports two-dimensional modelling as it was designed for rapid experimental prototyping. Extending the codes to three-dimensional modelling is trivial in principle, although multi-GPU support has not yet been implemented.
