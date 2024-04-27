@@ -1,5 +1,7 @@
 # Forge
 
+![Build Status](https://github.com/GeorgeWilliamStrong/forge/actions/workflows/examples.yml/badge.svg)
+
 A full-waveform inversion (FWI) framework built in [PyTorch](https://pytorch.org/). Forge was designed and built for research and prototyping of tomographic acoustic imaging methods.
 
 Everything has been built from the ground up using pure PyTorch, with no third-party libraries relied upon for wave propagation or inversion. This gives the user complete control and customisability.
