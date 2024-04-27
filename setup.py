@@ -7,7 +7,7 @@ setup(
     name='forge',
     version='1.0',
     description='A full-waveform inversion framework built in PyTorch',
-    long_description='A full-waveform inversion framework built in PyTorch', 
+    long_description='A full-waveform inversion framework built in PyTorch',
     author='George Strong',
     author_email='geowstrong@gmail.com',
     license='AGPL-3.0',
