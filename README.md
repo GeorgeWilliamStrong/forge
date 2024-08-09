@@ -11,8 +11,6 @@ Everything has been built from the ground up using pure PyTorch, with no third-p
 2. be *entirely* hackable,
 3. built on PyTorch.
 
-If three-dimensional modelling and/or production grade performance are required, [stride](https://www.stride.codes/) and [devito](https://www.devitoproject.org/) are recommended.
-
 ## Quickstart
 
 Install Forge and its required dependencies as follows:
